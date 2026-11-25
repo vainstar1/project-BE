@@ -1,0 +1,1 @@
+for (const [a,l] of [['0x258B45D2230','false'],['0x257FF024450','true']]) { const pc=ptr(a); const ifc=pc.add(0x4b0); const f=new NativeFunction(ifc.readPointer().add(0x18).readPointer(),'int',['pointer']); log('pc',a,'local',l,'rollbackId',f(ifc), 'fn', RVA(ifc.readPointer().add(0x18).readPointer())); }

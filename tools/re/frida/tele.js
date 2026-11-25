@@ -1,0 +1,14 @@
+const eng = VA(0x14558F8B0).readPointer();
+const ctxs = eng.add(0xbb8).readPointer();
+const world = ctxs.readPointer().add(0x288).readPointer();
+const engine = world.add(0x8d8).readPointer().add(0x3e8).readPointer();
+const staticClass = new NativeFunction(VA(0x142b4e800), 'pointer', []);
+const sco = new NativeFunction(VA(0x1416aac50), 'pointer', ['pointer','pointer','uint64','uint32','uint32','pointer','uint8','pointer','uint8']);
+const ev = sco(staticClass(), engine, 0, 0, 0, ptr(0), 0, ptr(0), 0);
+ev.add(0x30).writeS32(257);
+ev.add(0x38).writeFloat(1258); ev.add(0x3c).writeFloat(10150); ev.add(0x40).writeFloat(736);
+ev.add(0x44).writeFloat(0); ev.add(0x48).writeFloat(90); ev.add(0x4c).writeFloat(0);
+const iface = engine.add(0x30);
+const add = new NativeFunction(iface.readPointer().add(0x30).readPointer(), 'void', ['pointer','pointer']);
+add(iface, ev);
+log('teleport submitted', ev);

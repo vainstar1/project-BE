@@ -1,0 +1,248 @@
+# UFUNCTION(Exec) console commands in the retail client (static reflection; not tested)
+
+[AISystem] (2)
+  AIIgnorePlayers
+  AILoggingVerbose
+
+[CheatManager] (50)
+  BugIt ScreenShotDescription:Str
+  BugItGo Roll:Float Yaw:Float Pitch:Float Z:Float Y:Float X:Float
+  BugItStringCreator LocString:Str GoString:Str ViewRotation:Struct ViewLocation:Struct
+  ChangeSize F:Float
+  CheatScript ScriptName:Str
+  DamageTarget DamageAmount:Float
+  DebugCapsuleSweep
+  DebugCapsuleSweepCapture
+  DebugCapsuleSweepChannel Channel:Byte
+  DebugCapsuleSweepClear
+  DebugCapsuleSweepComplex bTraceComplex:Bool
+  DebugCapsuleSweepPawn
+  DebugCapsuleSweepSize Radius:Float HalfHeight:Float
+  DestroyAll aClass:Class
+  DestroyAllPawnsExceptTarget
+  DestroyPawns aClass:Class
+  DestroyServerStatReplicator
+  DestroyTarget
+  DumpChatState
+  DumpOnlineSessionState
+  DumpPartyState
+  DumpVoiceMutingState
+  FlushLog
+  Fly
+  FreezeFrame Delay:Float
+  Ghost
+  God
+  InvertMouse
+  LogLoc
+  OnlyLoadLevel PackageName:Name
+  PlayersOnly
+  SetMouseSensitivityToDefault
+  SetWorldOrigin
+  Slomo NewTimeDilation:Float
+  SpawnServerStatReplicator
+  StreamLevelIn PackageName:Name
+  StreamLevelOut PackageName:Name
+  Summon ClassName:Str
+  Teleport
+  TestCollisionDistance
+  ToggleAILogging
+  ToggleDebugCamera
+  ToggleServerStatReplicatorClientOverwrite
+  ToggleServerStatReplicatorUpdateStatNet
+  UpdateSafeArea
+  ViewActor ActorName:Name
+  ViewClass DesiredClass:Class
+  ViewPlayer S:Str
+  ViewSelf
+  Walk
+
+[DebugCameraController] (1)
+  ShowDebugSelectedInfo
+
+[GameInstance] (2)
+  DebugCreatePlayer ControllerId:Int
+  DebugRemovePlayer ControllerId:Int
+
+[GameMode] (2)
+  Say Msg:Str
+  SetBandwidthLimit AsyncIOBandwidthLimit:Float
+
+[GameViewportClient] (3)
+  SSSwapControllers
+  SetConsoleTarget PlayerIndex:Int
+  ShowTitleSafeArea
+
+[HUD] (6)
+  NextDebugTarget
+  PreviousDebugTarget
+  ShowDebug DebugType:Name
+  ShowDebugForReticleTargetToggle DesiredClass:Class
+  ShowDebugToggleSubCategory Category:Name
+  ShowHUD
+
+[MBCrowdManager] (1)
+  Debug_TriggerCrowdEvent ClassName:Name EventType:Enum
+
+[MBFEInGameCharacterSelectScreen] (1)
+  SendMultipleHeroExploitRequest
+
+[MBFEWatchZoneMenu] (3)
+  SetWatchZoneChangelist Changelist:Int
+  SetWatchZoneContainer Container:Str
+  SetWatchZoneContainerExact Container:Str
+
+[MBFrontEnd] (1)
+  TryCreateScreenStackRestorePoint ReturnValue:Bool
+
+[MBGameInstance] (3)
+  Debug_ToggleConsoleMenus
+  Debug_TogglePlayfabMapList
+  Debug_TutorialSkipToCombat
+
+[MBHUDBase] (3)
+  HideHUD
+  SetAllHUDHidden bHideHUD:Bool
+  UnHideHUD
+
+[MBLeaderboardManager] (9)
+  DebugClearLeaderboardCache
+  DebugPrintFriendLeaderboard MaxResultsCount:Int LeaderboardName:Str
+  DebugPrintLeaderboard MaxResultsCount:Int LeaderboardName:Str
+  DebugPrintLocalPlayerRank LeaderboardName:Str
+  DebugPrintLocalPlayerSkillRank
+  DebugUpdateLocalPlayerSkill_Decayed NumDaysOfDecay:Int
+  DebugUpdateLocalPlayerSkill_OnLogin
+  DebugUpdateLocalPlayerSkill_PostMatch
+  DebugWriteToLeaderboard Value:Int LeaderboardName:Str
+
+[MBPlayerController] (68)
+  CheckPhysScenes PrintCount:Int StartPrint:Int
+  ContactWith ContactName:Name
+  ContinueProfileLoadTest
+  DebugDraw_MBPersistent
+  DebugFlag DebugFlag:Name
+  DebugMessage Message:Str
+  DebugOpenModScreen
+  Debug_AddCustomisation CustomisationName:Name
+  Debug_AddSkin SkinsName:Name
+  Debug_AddTaunt TauntName:Name
+  Debug_Ban_ApplyPermanentBanOutright
+  Debug_Ban_ApplyPermanentBanRepeat
+  Debug_Ban_ApplyTemporaryBan BanEndISOFormat:Str
+  Debug_Ban_ApplyWarning
+  Debug_Ban_ClearBanStatus
+  Debug_ChangePlayerClassFromName HeroBuild:Int NewSuperAbilityIndex:Int NewClass:Name
+  Debug_GiveCredits Num:Int
+  Debug_GiveModParts Num:Int
+  Debug_MarkCustomisationGiftsAsOwned
+  Debug_MarkCustomisationGiftsAsUnowned
+  Debug_MarkTutorialIncomplete
+  Debug_PIEOnlineRequestsFailureRate FailRate:Float
+  Debug_ResetAchievements
+  Debug_ResetToDefaultMods ClassToReset:Name
+  Debug_SetCustomisation Customisation:Name ClassName:Name
+  Debug_SetSkin SkinName:Name
+  Debug_SetTaunt TauntName:Name
+  Debug_StartOvertime
+  Debug_TestProfanityFilter ChatMessage:Str
+  Debug_UnlockAchievement AchievementId:Str
+  Debug_UpdateAchievement progress:Float AchievementId:Str
+  DisableCameraAutoReset
+  DisablePassives
+  DisableStatsSnapshot
+  DoPhysXTestSweep
+  DownloadAnalyticsForMatch ReplayName:Str Container:Str
+  EnableStatsSnapshot
+  GodMode
+  IgnoreCooldowns
+  IgnoreMana
+  MBCrashGame
+  MBDebugDraw Channel:Name
+  MBDebugDraw_Clear
+  MBDebugDraw_Persistent
+  MBDebugDraw_Target Target:Name
+  MBFailAssert
+  MBFailEnsure
+  MBToggleDbgRollback
+  OneHitKill
+  PrintPowercellDebug
+  ProfileLoadPlayerClass ClassName:Name
+  ProfileUnloadPlayerClasses
+  RequestKioskRestart
+  SetCanDebugCamTeleport bCanUse:Bool
+  SetCanUseDebugCam bCanUse:Bool
+  SetHashCheckingEnabled bEnable:Bool
+  SetHeroBuild HeroBuild:Int
+  SetKioskPlayerReadyStatus bIsReady:Bool
+  SetNetSimulationPreset Preset:Name
+  SetUseSweepCaching bEnable:Bool
+  SkipPreMatchCountdown
+  StartProfileLoadTest
+  TestDynamicDebug DesiredDeltaZ:Float DesiredDeltaY:Float DesiredDeltaX:Float CurrentDeltaZ:Float CurrentDeltaY:Float CurrentDeltaX:Float ActorLocationZ:Float ActorLocationY:Float ActorLocationX:Float
+  TestNavMeshDebug GuaranteedMovement:Bool DesiredDeltaZ:Float DesiredDeltaY:Float DesiredDeltaX:Float CurrentTriangle:UInt32 CurrentDeltaZ:Float CurrentDeltaY:Float CurrentDeltaX:Float ActorLocationZ:Float ActorLocationY:Float ActorLocationX:Float
+  ToggleDebugInputDisplay
+  ToggleDebugLookControls
+  ToggleTraceTickedWidgetCount
+  TraceTickedWidgetsThisFrame
+
+[MBPlayerControllerBase] (4)
+  AddSplitscreen
+  RemoveSplitscreen
+  StartSpectating
+  StopSpectating
+
+[MBRollbackGameMode] (1)
+  Debug_ToggleForceWaitingForPlayers
+
+[MBSeedManagerProxy] (2)
+  Debug_AwardSeeds NumSeeds:Int
+  Debug_SetSeedManagerState NewState:Enum
+
+[NTHUD] (26)
+  DebugTextSearchKeyword keyword:Str
+  DisableDebugDraw ChannelName:Name
+  DisplayDebugHUD
+  EnableDebugDraw ChannelName:Name
+  HUDDebugTextScale scale:Float
+  LoadDebugProfile ProfileName:Str
+  NTAssertAsk
+  NTAssertDisable
+  NTAssertIgnoreAll
+  NTAssertLikeUE
+  NTAssertReset
+  NTAssertTest
+  NextDebugActor
+  NextDebugActorTextCategory
+  NextDebugActorTextChannel
+  PrevDebugActor
+  PrevDebugActorTextCategory
+  PrevDebugActorTextChannel
+  ResetDebugActor
+  ResetDebugActorTextCategory
+  ResetDebugActorTextChannel
+  ShowChangelist
+  TDD channels:Str
+  TGDD channels:Str
+  ToggleDebugChannelSelector
+  ToggleDebugDraw ChannelName:Name
+
+[PlayerController] (12)
+  Camera NewMode:Name
+  ConsoleKey Key:Struct
+  EnableCheats
+  FOV NewFOV:Float
+  LocalTravel URL:Str
+  Pause
+  RestartLevel
+  SendToConsole Command:Str
+  SetName S:Str
+  StartFire FireModeNum:Byte
+  SwitchLevel URL:Str
+  ToggleSpeaking bInSpeaking:Bool
+
+[PlayerInput] (5)
+  ClearSmoothing
+  InvertAxis AxisName:Name
+  InvertAxisKey AxisKey:Struct
+  SetBind Command:Str BindName:Name
+  SetMouseSensitivity Sensitivity:Float

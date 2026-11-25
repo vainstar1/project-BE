@@ -10,3 +10,11 @@ tools/re/*.npy
 tools/re/__pycache__/
 dist/
 build/
+build/
+tools/harness/ue4ss[0-9]*/
+tools/harness/dialogs.log
+tools/re/strs.txt
+tools/re/vtables.json
+tools/re/out/
+tools/harness/lt.tmp
+tools/re/execs.pkl

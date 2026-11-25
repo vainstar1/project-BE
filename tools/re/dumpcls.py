@@ -8,7 +8,7 @@ for c in d['classes']:
     print(f"=== {n} flags={c['class_flags']} config={c.get('config_name')}")
     for p in c.get('properties',[]):
         if 'container_parent_va' in p: continue
-        print(f"   P {p['offset']:>6} {p['type']:<10} {p['name']}  pf={p['property_flags']}")
+        print(f"   P {str(p['offset']):>6} {p['type']:<10} {p['name']}  pf={p['property_flags']}")
     for f in c.get('functions',[]):
         F=fn.get(f['descriptor_va'])
         if F:

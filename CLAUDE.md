@@ -22,22 +22,18 @@ Not a programmer. Wants Claude fully autonomous: launch the game, inject, test a
 - UE4SS UFunction layout is shifted +0x20 vs stock 4.20, fixed by `tools\harness\ue4ss\MemberVariableLayout.ini`. Don't remove it.
 
 ## Test harness (`tools\harness`)
-- `ctl.ps1 -Action launch|inject|shot|post|key|kill|status [-TargetPid N] [-Dll path] [-Keys ..] [-Out png]`
-  - `inject` LoadLibrary's `tools\harness\ue4ss\UE4SS.dll`. The BEProbe mod polls `ue4ss\cmd.txt` every second, runs it as Lua on the game thread, and logs to `ue4ss\probe.log`. Lua helpers: `snapshot(label)`, `world()`, `live(all("Class"))`, `call(o,"Fn",...)`, `get(o,"Prop")`, `plog(...)`, `fname(o)`, `cls(o)`.
-  - `shot` captures the game window only (PrintWindow). `post -Keys 0D` posts virtual keys without focus. Posted mouse clicks don't work.
-- `vtables.ps1` reads live vtables for CDO addresses that the probe logs as `ADDR <path> 0x...`. `readconsole.ps1` dumps the UE4SS console; run it in a separate powershell process.
-- Typical boot today: launch, wait ~40 s, `key {ENTER}` (or skip), inject, wait ~20 s, then send Lua. **Planned improvement:** a single `boot` command that polls for readiness instead of fixed sleeps, at low resolution, loading straight into a map.
-- Second instance on one PC: the game kills itself if another process has the same exe name (check at `0x14153EE70`). Hard-link the exe under a different name in `Binaries\Win64` (e.g. `BEInstance2-Win64-Shipping.exe`), launch that, and delete the link afterwards. Give the second instance its own UE4SS staging copy so the `cmd.txt` files don't collide.
-- Pitfalls: any malformed line in `UE4SS-settings.ini` makes UE4SS silently use defaults (console on, no mods, no log). Bash heredocs and sed eat Windows backslashes, so use Python with raw strings or forward slashes. Don't name a Python script `dis.py`.
-- `tools\re`: Python RE helpers. `xref.py` builds a cached lea/pdata index in its own folder; `rel32.py` builds the rel32 target index needed by `refscan.py`/`structrefs.py`; `bedis.py` is a capstone disassembler; `pkttypes.py` maps packet vtables. Python 3.11 with capstone, pefile and numpy. `tools\re\frida\exittrace.js` is an example Frida spawn and hook, run with the node and frida from `..\bleeding-edge-rea-research\tools` (node v22, frida 17).
+- Build: `sh host/build.sh` (DLL) and `sh launcher/build.sh` (BE1v1.exe, devlaunch.exe), winlibs MinGW g++ 14. Output in `build\`.
+- `ctl.ps1 -Action boot [-Instance 2] [-NoNative] [-ExtraArgs '-be1v1host -be1v1lan']`: starts the game through `build\devlaunch.exe` with a fresh copy of be1v1.dll (log: `build\run\be1v1-<pid>.log`), injects the UE4SS probe, waits until it reports in (~15 s; intro videos are skipped). Instance 2 uses the hard link `BEInstance2-Win64-Shipping.exe` and its own probe folder `ue4ss2` (synced on each launch). Other actions: `launch|inject|shot|post|hold|key|kill|status|dismiss`.
+- The BEProbe mod polls `ue4ss\cmd.txt` (or `ue4ss2\`) and runs it as Lua on the game thread; send with `lua.ps1 [-Dir ue4ss2] -Code '...'`. Helpers: `snapshot(label)`, `world()`, `live(all("Class"))`, `call(o,"Fn",...)`, `get(o,"Prop")`, `plog(...)`, `fname(o)`, `cls(o)`, `openmap(url)`, `console(cmd)` (console is disabled in this build; use `openmap`).
+- `duo.ps1`: kill both, boot host, `openmap('<Train>?listen?bIsLanMatch')`, boot instance 2, join 127.0.0.1:7777. `pick.ps1 -Instance N -Hero Ninja` selects a hero and presses FIGHT (posted Space x2). Hero names: Azrael Bruiser Buttercup Cass Gizmo KeyboardGuy Kulev Makutu Ninja(Daemon) Miko Nidhoggr Prism Wrekko.
+- `shot` captures the game window only. `post -Keys 20` / `hold -Keys "57,2500"` post keys without focus (gameplay input works). Posted mouse clicks don't work. Enter opens text chat.
+- Every launch shows an EasyAntiCheat "IGameClient" message box; be1v1.dll auto-accepts it, and `dialogwatch.ps1` (start hidden) dismisses it for runs without the DLL.
+- Tracing: `trace.ps1 -Instance N -Agent join.js` attaches Frida (agents in `tools\re\frida`, prelude gives `VA()`, `hook()`, `fstr()`, `bt()`). Decompile: `python tools/re/decomp.py <outdir> 0xADDR:label ...` (headless Ghidra from the old workspace; outdir must not contain `!`). `xref.py`, `rel32.py`, `refscan.py`, `structrefs.py` (`callers()`), `bedis.py`, `dumpcls.py <reflection-full.json> <regex>` as before.
+- The game log is useless (almost all categories compiled out). One Steam account: only the first game process gets Steam sockets, so local two-instance tests use IP (`-be1v1lan`, 127.0.0.1).
+- Pitfalls: malformed `UE4SS-settings.ini` silently disables mods. Bash heredocs, sed and Python string literals eat Windows backslashes, and PowerShell treats `$Map?listen` as one variable name. Don't name a Python script `dis.py`.
 
 ## Layout
-`host\` native host DLL · `launcher\` friend-facing exe · `lua\` UE4SS glue (if any ships) · `tools\` dev only · `docs\` · `dist\` built package.
+`host\` native DLL (be1v1.dll) · `launcher\` BE1v1.exe + devlaunch.exe + README.txt · `tools\` dev only · `docs\` · `dist\BE1v1\` + `dist\BE1v1.zip` package (exe, dll, README).
 
-## v1 plan
-1. Faster `boot` harness, plus two instances on this PC.
-2. Host side (native DLL): create the `GameNetDriver` and `InitListen` (reimplement `UWorld::Listen`), then get instance 2 to complete the UE handshake to instance 1 via `open 127.0.0.1`.
-3. Replace stubbed `ServerReplicateActors` with a minimal loop (GameState, PlayerControllers, PlayerStates) so the joining client gets its controller.
-4. Trace and enable the host's rollback server path and `NTRollbackChannel` for the joiner. Both clients spawn and fight on Train CP, and the match ends normally.
-5. Switch transport to Steam P2P (SteamNetDriver + Steam ID join) for internet play.
-6. Package: one launcher exe that injects the DLL and offers Host/Join with a Steam invite or code.
+## Status (2026-11-25)
+v1 plan steps 1-6 are implemented; details, addresses and open items in `docs\v1-implementation.md`. Verified locally with two instances: auto host/join, lobby, teams 0/1, character select and spawn, rollback input sync, match end and return to menu. Not verified: Steam P2P between two accounts, damage between players.

@@ -1,6 +1,12 @@
 -- BEProbe: read-mostly feasibility probe with a file command channel.
 -- Write Lua into cmd.txt (next to UE4SS.dll); it runs on the game thread and output goes to probe.log.
+-- ROOT is the UE4SS folder this copy was loaded from (instance 2 has its own copy).
 local ROOT = [[C:\Users\andre\OneDrive\Desktop\big folder\! BE 1v1s\tools\harness\ue4ss\]]
+do
+    local src = debug.getinfo(1, "S").source or ""
+    local dir = src:gsub("^@", ""):gsub("/", "\\"):match("^(.*\\)Mods\\BEProbe\\Scripts\\main%.lua$")
+    if dir then ROOT = dir end
+end
 local LOGF = ROOT .. "probe.log"
 local CMDF = ROOT .. "cmd.txt"
 
@@ -129,7 +135,20 @@ local function poll()
     end)
 end
 
-log("BEProbe loaded")
+function _G.console(cmd)
+    local K = StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+    local w = world()
+    local pc = nil
+    for _, p in pairs(live(all("PlayerController"))) do pc = p break end
+    K:ExecuteConsoleCommand(w, cmd, pc)
+end
+
+function _G.openmap(url)
+    local G = StaticFindObject("/Script/Engine.Default__GameplayStatics")
+    G:OpenLevel(world(), FName(url), true, "")
+end
+
+log("BEProbe loaded from " .. ROOT)
 LoopAsync(1000, function()
     if not busy then pcall(poll) end
     return false

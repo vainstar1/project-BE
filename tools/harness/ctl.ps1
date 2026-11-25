@@ -1,15 +1,24 @@
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('launch', 'inject', 'shot', 'kill', 'status', 'key', 'focus', 'post', 'click')][string]$Action,
-    [string]$Out = "$PSScriptRoot\ue4ss\shot.png",
+    [Parameter(Mandatory = $true)][ValidateSet('launch', 'inject', 'shot', 'kill', 'status', 'key', 'focus', 'post', 'click', 'boot', 'dismiss', 'hold')][string]$Action,
+    [string]$Out = '',
     [string]$Keys = '',
     [string]$ExtraArgs = '',
     [int]$TargetPid = 0,
-    [string]$Dll = ''
+    [string]$Dll = '',
+    [int]$Instance = 1,
+    [switch]$NoNative,
+    [string]$Url = ''
 )
 $ErrorActionPreference = 'Stop'
 $gameWin64 = 'D:\SteamLibrary\steamapps\common\Bleeding Edge\Moblade\Binaries\Win64'
 $exe = Join-Path $gameWin64 'MobladeClient-Win64-Shipping.exe'
-$dll = if ($Dll) { $Dll } else { Join-Path $PSScriptRoot 'ue4ss\UE4SS.dll' }
+# Instance 2+ runs through a hard link with a different exe name (the game kills same-named duplicates).
+$procName = if ($Instance -eq 1) { 'MobladeClient-Win64-Shipping' } else { "BEInstance$Instance-Win64-Shipping" }
+$runExe = Join-Path $gameWin64 "$procName.exe"
+$ue4ssDir = if ($Instance -eq 1) { Join-Path $PSScriptRoot 'ue4ss' } else { Join-Path $PSScriptRoot "ue4ss$Instance" }
+$dll = if ($Dll) { $Dll } else { Join-Path $ue4ssDir 'UE4SS.dll' }
+$nativeDll = Join-Path $PSScriptRoot '..\..\build\be1v1.dll'
+if (-not $Out) { $Out = Join-Path $ue4ssDir 'shot.png' }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 if (-not ('W32' -as [type])) {
@@ -49,6 +58,26 @@ public static class GameWin {
     System.Threading.Thread.Sleep(60);
     PostMessage(h, 0x0101, (IntPtr)vk, (IntPtr)(1 | (sc << 16) | (1u << 30) | (1u << 31)));
   }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+  // Presses the default/OK button of any message-box dialog owned by the process (no focus change). Returns a description.
+  public static string DismissDialogs(int pid) {
+    var outp = new StringBuilder();
+    EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); var cls = new StringBuilder(64); GetClassName(h, cls, 64);
+      if (p == (uint)pid && IsWindowVisible(h) && cls.ToString() == "#32770") {
+        var title = new StringBuilder(256); GetWindowText(h, title, 256);
+        var text = new StringBuilder(); IntPtr btn = IntPtr.Zero; int btnId = 1;
+        EnumChildWindows(h, (c, l2) => { var cc = new StringBuilder(64); GetClassName(c, cc, 64); var t = new StringBuilder(512); GetWindowText(c, t, 512);
+          if (cc.ToString() == "Static") text.Append(t.ToString()).Append(' ');
+          if (cc.ToString() == "Button" && btn == IntPtr.Zero) { btn = c; btnId = GetDlgCtrlID(c); }
+          return true; }, IntPtr.Zero);
+        PostMessage(h, 0x0111, (IntPtr)(btnId & 0xFFFF), btn);   // WM_COMMAND(BN_CLICKED) from the first button
+        outp.Append("dismissed dialog '" + title + "': " + text.ToString().Trim() + "\n");
+      }
+      return true; }, IntPtr.Zero);
+    return outp.ToString();
+  }
   public static IntPtr Find(int pid) {
     IntPtr found = IntPtr.Zero;
     EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); var sb = new StringBuilder(256); GetClassName(h, sb, 256);
@@ -58,32 +87,71 @@ public static class GameWin {
 }
 '@
 }
-function Get-Game { if ($TargetPid) { Get-Process -Id $TargetPid -ErrorAction SilentlyContinue } else { Get-Process -Name 'MobladeClient-Win64-Shipping' -ErrorAction SilentlyContinue } }
+function Get-Game { if ($TargetPid) { Get-Process -Id $TargetPid -ErrorAction SilentlyContinue } else { Get-Process -Name $procName -ErrorAction SilentlyContinue } }
 function Focus-Game { $p = Get-Game | Select-Object -First 1; if ($p -and $p.MainWindowHandle -ne 0) { [W32]::ShowWindow($p.MainWindowHandle, 9) | Out-Null; [W32]::SetForegroundWindow($p.MainWindowHandle) | Out-Null } }
+function Inject-Dll([string]$path) {
+    $p = Get-Game | Select-Object -First 1
+    if (-not $p) { throw 'Game not running' }
+    $leaf = Split-Path $path -Leaf
+    if ($p.Modules | Where-Object { $_.ModuleName -eq $leaf }) { return "already has $leaf" }
+    $h = [W32]::OpenProcess(0x1F0FFF, $false, $p.Id)
+    $bytes = [Text.Encoding]::Unicode.GetBytes([IO.Path]::GetFullPath($path) + "`0")
+    $mem = [W32]::VirtualAllocEx($h, [IntPtr]::Zero, [UIntPtr][uint64]$bytes.Length, 0x3000, 0x04)
+    $w = [UIntPtr]::Zero
+    [W32]::WriteProcessMemory($h, $mem, $bytes, [UIntPtr][uint64]$bytes.Length, [ref]$w) | Out-Null
+    $ll = [W32]::GetProcAddress([W32]::GetModuleHandle('kernel32.dll'), 'LoadLibraryW')
+    $tid = 0
+    $t = [W32]::CreateRemoteThread($h, [IntPtr]::Zero, [UIntPtr]::Zero, $ll, $mem, 0, [ref]$tid)
+    [W32]::WaitForSingleObject($t, 60000) | Out-Null
+    $code = 0; [W32]::GetExitCodeThread($t, [ref]$code) | Out-Null
+    "injected $leaf pid=$($p.Id) loadlibrary=0x{0:X}" -f $code
+}
+function Dismiss($p) { $r = [GameWin]::DismissDialogs($p.Id); if ($r) { Write-Output $r.Trim(); Add-Content (Join-Path $PSScriptRoot 'dialogs.log') "$(Get-Date -Format s) inst$Instance $($r.Trim())" } }
+function Start-Game {
+    if (Get-Game) { throw "Instance $Instance already running" }
+    if ($Instance -ne 1) {
+        if (-not (Test-Path $runExe)) { New-Item -ItemType HardLink -Path $runExe -Target $exe | Out-Null }
+        if (-not (Test-Path (Join-Path $ue4ssDir 'UE4SS.dll'))) {
+            New-Item -ItemType Directory -Force $ue4ssDir | Out-Null
+            foreach ($f in 'UE4SS.dll', 'UE4SS-settings.ini', 'MemberVariableLayout.ini') { Copy-Item -Force (Join-Path $PSScriptRoot "ue4ss\$f") $ue4ssDir }
+            Copy-Item -Recurse -Force (Join-Path $PSScriptRoot 'ue4ss\Mods') $ue4ssDir
+            Copy-Item -Recurse -Force (Join-Path $PSScriptRoot 'ue4ss\UE4SS_Signatures') $ue4ssDir
+        }
+        # Always resync the probe script, pointing it at this instance's folder.
+        $src = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ue4ss\Mods\BEProbe\Scripts\main.lua'))
+        [IO.File]::WriteAllText((Join-Path $ue4ssDir 'Mods\BEProbe\Scripts\main.lua'), $src.Replace('tools\harness\ue4ss\]]', "tools\harness\ue4ss$Instance\]]"))
+    }
+    $a = "-windowed -ResX=960 -ResY=540 $ExtraArgs"
+    if ($NoNative) {
+        $p = Start-Process -FilePath $runExe -ArgumentList $a -WorkingDirectory $gameWin64 -PassThru
+        "launched instance $Instance pid=$($p.Id)"
+    } else {
+        # The dev launcher loads a fresh copy of be1v1.dll before the game's entry point (logs: build\run\be1v1-<pid>.log).
+        $runDir = Join-Path $PSScriptRoot '..\..\build\run'; New-Item -ItemType Directory -Force $runDir | Out-Null
+        $copy = Join-Path $runDir ("be1v1_{0}.dll" -f (Get-Date -Format 'HHmmssfff'))
+        Copy-Item $nativeDll $copy
+        $launcher = Join-Path $PSScriptRoot '..\..\build\devlaunch.exe'
+        $gpid = & $launcher $runExe $copy @(@($Url) | Where-Object { $_ }) -windowed -ResX=960 -ResY=540 @($ExtraArgs -split ' ' | Where-Object { $_ })
+        "launched instance $Instance pid=$gpid (native)"
+    }
+}
 
 switch ($Action) {
-    'launch' {
-        if (Get-Game) { throw 'Game already running' }
-        $a = @('-log', '-forcelogflush', '-windowed', '-ResX=1280', '-ResY=720') + ($ExtraArgs -split ' ' | Where-Object { $_ })
-        $p = Start-Process -FilePath $exe -ArgumentList $a -WorkingDirectory $gameWin64 -PassThru
-        "launched pid=$($p.Id)"
-    }
-    'inject' {
-        $p = Get-Game | Select-Object -First 1
-        if (-not $p) { throw 'Game not running' }
-        $mods = $p.Modules | Where-Object { $_.ModuleName -match 'UE4SS|ReShade' }
-        if ($mods) { throw "Already has: $($mods.ModuleName -join ',')" }
-        $h = [W32]::OpenProcess(0x1F0FFF, $false, $p.Id)
-        $bytes = [Text.Encoding]::Unicode.GetBytes($dll + "`0")
-        $mem = [W32]::VirtualAllocEx($h, [IntPtr]::Zero, [UIntPtr][uint64]$bytes.Length, 0x3000, 0x04)
-        $w = [UIntPtr]::Zero
-        [W32]::WriteProcessMemory($h, $mem, $bytes, [UIntPtr][uint64]$bytes.Length, [ref]$w) | Out-Null
-        $ll = [W32]::GetProcAddress([W32]::GetModuleHandle('kernel32.dll'), 'LoadLibraryW')
-        $tid = 0
-        $t = [W32]::CreateRemoteThread($h, [IntPtr]::Zero, [UIntPtr]::Zero, $ll, $mem, 0, [ref]$tid)
-        [W32]::WaitForSingleObject($t, 60000) | Out-Null
-        $code = 0; [W32]::GetExitCodeThread($t, [ref]$code) | Out-Null
-        "injected pid=$($p.Id) loadlibrary=0x{0:X}" -f $code
+    'launch' { Start-Game }
+    'inject' { Inject-Dll $dll }
+    'boot' {
+        # launch, wait for the window, inject native DLL + UE4SS probe, wait for the probe to report in.
+        Start-Game
+        $deadline = (Get-Date).AddSeconds(120)
+        do { Start-Sleep -Milliseconds 500; $p = Get-Game | Select-Object -First 1; if ($p) { Dismiss $p } } while ((-not $p -or [GameWin]::Find($p.Id) -eq [IntPtr]::Zero) -and (Get-Date) -lt $deadline)
+        for ($i = 0; $i -lt 8; $i++) { Start-Sleep -Milliseconds 500; Dismiss $p }
+        $log = Join-Path $ue4ssDir 'probe.log'
+        Remove-Item $log -ErrorAction SilentlyContinue
+        Inject-Dll $dll
+        do { Start-Sleep -Milliseconds 500; Dismiss $p } while (-not ((Test-Path $log) -and (Select-String -Path $log -Pattern 'BEProbe loaded' -Quiet)) -and (Get-Date) -lt $deadline)
+        for ($i = 0; $i -lt 10; $i++) { Start-Sleep -Milliseconds 500; Dismiss $p }
+        if ((Get-Date) -ge $deadline) { throw 'boot timed out' }
+        "ready"
     }
     'shot' {
         # Game window only (never the user's desktop).
@@ -96,13 +164,24 @@ switch ($Action) {
         $bmp = New-Object System.Drawing.Bitmap $w, $h
         $g = [System.Drawing.Graphics]::FromImage($bmp)
         $hdc = $g.GetHdc(); [GameWin]::PrintWindow($hwnd, $hdc, 2) | Out-Null; $g.ReleaseHdc($hdc)
-        $small = New-Object System.Drawing.Bitmap $bmp, ([int]($w * 0.6)), ([int]($h * 0.6))
+        $small = New-Object System.Drawing.Bitmap $bmp, ([int]($w * 0.7)), ([int]($h * 0.7))
         $small.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png)
         "saved $Out ($w x $h)"
     }
     'focus' { Focus-Game; 'focused' }
+    'hold' {
+        # -Keys "57,1500" holds a virtual key (hex) for N milliseconds via posted key-repeat messages
+        $p = Get-Game | Select-Object -First 1
+        $hwnd = [GameWin]::Find($p.Id)
+        $vk = [Convert]::ToUInt32(($Keys -split ',')[0], 16); $ms = [int](($Keys -split ',')[1])
+        $sc = [GameWin]::MapVirtualKey($vk, 0)
+        $end = (Get-Date).AddMilliseconds($ms)
+        while ((Get-Date) -lt $end) { [GameWin]::PostMessage($hwnd, 0x0100, [IntPtr]$vk, [IntPtr](1 -bor ($sc -shl 16))) | Out-Null; Start-Sleep -Milliseconds 40 }
+        [GameWin]::PostMessage($hwnd, 0x0101, [IntPtr]$vk, [IntPtr](1 -bor ($sc -shl 16) -bor (1 -shl 30) -bor (1 -shl 31))) | Out-Null
+        "held $Keys"
+    }
+    'dismiss' { $p = Get-Game | Select-Object -First 1; if ($p) { Dismiss $p }; 'checked' }
     'click' {
-        # -Keys "x,y" in client pixels
         $p = Get-Game | Select-Object -First 1
         $hwnd = [GameWin]::Find($p.Id)
         $xy = $Keys -split ','; $l = [IntPtr](([int]$xy[1] -shl 16) -bor ([int]$xy[0] -band 0xFFFF))
@@ -119,10 +198,14 @@ switch ($Action) {
         "posted $Keys"
     }
     'key' { Focus-Game; Start-Sleep -Milliseconds 300; [System.Windows.Forms.SendKeys]::SendWait($Keys); "sent $Keys" }
-    'kill' { Get-Game | Stop-Process -Force; 'killed' }
+    'kill' {
+        Get-Game | Stop-Process -Force
+        if ($Instance -ne 1) { Start-Sleep 2; Remove-Item -Force $runExe -ErrorAction SilentlyContinue }
+        'killed'
+    }
     'status' {
         $p = Get-Game
         if (-not $p) { 'not running'; break }
-        foreach ($x in $p) { "pid=$($x.Id) title='$($x.MainWindowTitle)' ws=$([int]($x.WorkingSet64/1MB))MB resp=$($x.Responding)"; ($x.Modules | Where-Object { $_.ModuleName -match 'UE4SS|ReShade|be_' } | ForEach-Object ModuleName) -join ',' }
+        foreach ($x in $p) { "pid=$($x.Id) title='$($x.MainWindowTitle)' ws=$([int]($x.WorkingSet64/1MB))MB resp=$($x.Responding)"; ($x.Modules | Where-Object { $_.ModuleName -match 'UE4SS|be1v1' } | ForEach-Object ModuleName) -join ',' }
     }
 }
