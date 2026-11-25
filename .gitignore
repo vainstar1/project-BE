@@ -1,0 +1,12 @@
+# local test outputs
+tools/harness/ue4ss/probe.log
+tools/harness/ue4ss/cmd.txt
+tools/harness/ue4ss/*.png
+tools/harness/ue4ss/*.json
+tools/harness/ue4ss/*.txt
+tools/harness/ue4ss/UE4SS.log
+tools/re/*.pkl
+tools/re/*.npy
+tools/re/__pycache__/
+dist/
+build/

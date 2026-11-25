@@ -1,0 +1,332 @@
+=== NTSessionOptions flags=0x1010a0 config=None
+   P   0x28 Array      StartingGameplayEvents  pf=0x4010000000000015
+=== NTRollbackChannel flags=0x1000aa config=Engine
+   P   0x68 Object     RollbackNetworkInterface  pf=0x40000000000000
+=== NTRollbackObjectProvider flags=0x1040a1 config=None
+=== NTRollbackEngine flags=0x1000a8 config=None
+   P  0x680 Map        RecordingRetiredFrameHash  pf=0x40000000000000
+   P  0x678 Object     ServerResyncBaseFrame  pf=0x40000000000000
+   P  0x668 Object     SaveStream  pf=0x40000000000000
+   P  0x660 Object     LoadStream  pf=0x40000000000000
+   P  0x620 Array      RequestedRetiredFrameStates  pf=0x40000000000000
+   P  0x5c8 Struct     RetiredFrameCompressor  pf=0x40000000000000
+   P  0x5b8 Array      RetiredFrameStates  pf=0x40000000000000
+   P  0x5a8 Array      ArchivedRetiredFrameStates  pf=0x40000000000000
+   P  0x598 Array      LocalInputEvents  pf=0x40000000000000
+   P  0x588 Array      LocalPlayerRemoveEvents  pf=0x40000000000000
+   P  0x578 Array      PermanentLocalPlayerAddEvents  pf=0x40000000000000
+   P  0x568 Array      LocalPlayerAddEvents  pf=0x40000000000000
+   P  0x558 Array      GlobalManagerData  pf=0x40000000000000
+   P  0x548 Array      ActorInitialisers  pf=0x40000000000000
+   P  0x540 Object     SerialisationReferenceLibrary  pf=0x40000000000000
+   P  0x518 Struct     InputRegister  pf=0x40000000000000
+   P  0x478 Struct     DesyncLogger  pf=0x40000000000000
+   P  0x408 Struct     PipelineFrameEvaluator  pf=0x40000000000000
+   P  0x3b8 Struct     GameStateSerialiser  pf=0x40000000000000
+   P  0x358 Struct     FrameHashGenerator  pf=0x40000000000000
+   P  0x1f8 Struct     RollbackWorker  pf=0x40000000000000
+   P  0x1d0 Struct     FrameStatePool  pf=0x40000000000000
+   P  0x170 Struct     PublicFrameHistory  pf=0x40000000000000
+   P  0x168 Object     InputPredictor  pf=0x40000000000000
+   P  0x160 Object     BackgroundEngineInterface  pf=0x40000000000000
+   P  0x158 Object     EngineInterface  pf=0x40000000000000
+   P  0x148 Array      OpenChannels  pf=0x40000000000000
+   P  0x140 Object     NetDriver  pf=0x40000000000000
+   P  0x138 Int        MinimumInputFrameNumber  pf=0x40000000000000
+   P  0x118 Array      InputEventsFromRecordings  pf=0x40000000000000
+   P   0xf0 Object     LastInterimFrameState  pf=0x40000000000000
+   P   0xc8 Struct     UniqueSessionData  pf=0x40000000000000
+   F 0x54020400 GetCurrentFrameNumber(ReturnValue:Int)
+   F 0x54020401 GetNumberOfReadyPlayers(ReturnValue:Int)
+   F 0x54020401 IsDroppingFrames(ReturnValue:Bool)
+   F 0x54020401 IsDroppingInput(ReturnValue:Bool)
+=== NTRollbackMachineGroupConnected flags=0x1000a0 config=None
+=== NTRollbackMachineGroupLocal flags=0x1000a0 config=None
+=== NTRollbackNetworkInterface flags=0x1000aa config=Engine
+   P  0x2f0 Array      ReceivedRetiredFrameStatePackets  pf=0x40000000000000
+   P  0x2d8 Struct     FrameHistoryFromGameStatePacket  pf=0x40000000000000
+   P  0x2a0 Struct     ReceivedSessionData  pf=0x40000000000000
+   P  0x230 Array      PlayersToAddFromClient  pf=0x40000000000000
+   P  0x220 Array      OwnedPlayerAddEvents  pf=0x40000000000000
+   P  0x1c0 Array      ReceivedOutputEventPackets  pf=0x40000000000000
+   P  0x1b0 Array      ReceivedInputEventPackets  pf=0x40000000000000
+   P   0x70 Object     StreamReference  pf=0x40000000000000
+   P   0x68 Object     RollbackEngine  pf=0x40000000000000
+   P   0x60 Float      AvgLag  pf=0x10000000000000
+=== NTRollbackObjectFactory flags=0x1000a6 config=Game
+   P   0x40 Object     World  pf=0x40000000000000
+   P   0x28 Struct     DefaultRollbackObjectFactoryClass  pf=0x40000000004000
+=== NTRollbackRecording flags=0x1000a0 config=None
+   P   0x30 Array      ClientStreams  pf=0x10000000000001
+   P   0x28 Object     ServerStream  pf=0x10000000000001
+=== NTRollbackMachine flags=0x1000a0 config=None
+   P   0x58 Struct     InitParams  pf=0x40000000000000
+   P   0x48 Array      Connections  pf=0x10000000000000
+   P   0x40 Object     StreamReader  pf=0x10000000000000
+   P   0x38 Object     RollbackEngine  pf=0x10000000000000
+   P   0x28 Str        MachineName  pf=0x10000000000000
+=== NTRollbackRecordingStream flags=0x1010a0 config=None
+   P   0x28 Array      RecordingBytes  pf=0x40000000000000
+=== NTRollbackMachineConnection flags=0x1000a0 config=None
+   P   0x30 Object     DestinationConnection  pf=0x40000000000000
+   P   0x28 Object     RollbackNetworkInterface  pf=0x40000000000000
+=== NTRollbackRecordingStreamReader flags=0x1000a0 config=None
+   P   0x50 Struct     Header  pf=0x40000000000000
+   P   0x48 Object     SourceStream  pf=0x40000000000000
+   P   0x38 Interface  RollbackObjectProvider  pf=0x44000000000000
+   P   0x30 Object     RollbackEngine  pf=0x40000000000000
+   P   0x28 Object     StreamReference  pf=0x40000000000000
+=== NTRollbackRecordingStreamWriter flags=0x1000a0 config=None
+   P   0x38 Struct     Header  pf=0x40000000000000
+   P   0x30 Object     RollbackEngine  pf=0x40000000000000
+   P   0x28 Object     StreamReference  pf=0x40000000000000
+=== NTRollbackMachineGroup flags=0x1000a1 config=None
+   P   0x48 Map        FutureFrames  pf=0x20080000000000
+   P   0x38 Array      MachineConnections  pf=0x20080000000000
+   P   0x28 Array      Machines  pf=0x20080000000000
+=== NTRollbackPlayerController flags=0x1040a1 config=None
+=== NTWorldSingleton flags=0x9000a8 config=None
+   P  0x408 Array      BufferedGameplayEvents  pf=0x20080000000000
+   P  0x3f8 Array      BufferedOutputEvents  pf=0x20080000000000
+   P  0x3f0 Object     CurrentState  pf=0x20080000000000
+   P  0x3e8 Object     RollbackEngine  pf=0x20080000000000
+   P  0x3a8 MulticastDelegate GameplayEventCallback  pf=0x10000010080000
+   P  0x398 MulticastDelegate OutputEventCallback  pf=0x10000010080000
+   F 0x54020401 GetRollbackEngine(ReturnValue:Object)
+=== NTRollbackWorldSettings flags=0x9002a4 config=game
+   P  0x5a0 Object     LevelSessionOptions  pf=0x1200000008001d
+   P  0x599 Bool       bUseRollbackEngineInThisMap  pf=0x10000000000015
+   P  0x598 Bool       bFixedUpMapCollision  pf=0x10000000000015
+=== NTRollbackRecordingTestBlueprint flags=0x1000a0 config=None
+   P   0xb0 Object     TestRecording  pf=0x10000000000015
+   F 0x8020800 EvaluateTestState(UpdateContext:Struct)
+   F 0x4020401 HasPlaybackStarted(ReturnValue:Bool)
+   F 0x4020401 IsPlaybackComplete(ReturnValue:Bool)
+   F 0x4020401 StartPlayback(bLocalMode:Bool,PlaybackFile:Str)
+   F 0x4020401 StartRecording(CommandLine:Str)
+   F 0x4020401 StopPlayback()
+   F 0x4020401 StopRecording()
+   F 0x4020401 TogglePauseRecording()
+=== MBConnectionManager flags=0x1000a0 config=None
+   P   0x48 Bool       bDisconnectWarningShown  pf=0x40000000002000
+   P   0x38 Array      PlayerInfos  pf=0x40000000002000
+   P   0x30 Object     GameInstance  pf=0x40000000002000
+   P   0x28 Object     WorldSingleton  pf=0x40000000002000
+=== MBGameServerManager flags=0xa0 config=None
+   P   0x70 Bool       bServerAllocated  pf=0x40000000000000
+   P   0x60 Str        SourceMatchId  pf=0x40000000000000
+   P   0x5a Bool       bEnableAnalytics  pf=0x40000000000000
+   P   0x59 Bool       bEnableSlotRefilling  pf=0x40000000000000
+   P   0x58 Bool       bAllowSlotRefilling  pf=0x40000000000000
+   P   0x48 Array      ActiveMatchmakingRequestIds  pf=0x40000000000000
+   P   0x38 Array      TeamSlotManagers  pf=0x40000000000000
+   P   0x30 Object     GameInstance  pf=0x40000000000000
+=== MBPeerServerSelector flags=0x1000a0 config=None
+   P  0x10c Bool       bServerDecisionSent  pf=0x40000000000000
+   P  0x10b Bool       bCoordinatorPingsCollated  pf=0x40000000000000
+   P  0x10a Bool       bConnectionStatsSent  pf=0x40000000000000
+   P  0x109 Bool       bIsCoordinator  pf=0x40000000000000
+   P  0x108 Enum       CurrentStatus  pf=0x40000000000000
+   P   0xf0 Text       CurrentStatusText  pf=0x40000000000000
+   P   0xe8 Int        NextPacketID  pf=0x40000000000000
+   P   0xe0 Double     WaitForConnectionStatsStartTime  pf=0x40000000000000
+   P   0xd8 Double     WaitForServerDecisionStartTime  pf=0x40000000000000
+   P   0xc8 Str        SelectedServerAddress  pf=0x40000000000000
+=== MBRollbackGameMode flags=0x9002a8 config=None
+   P  0x510 Struct     MatchStartTimeStamp  pf=0x40000000000000
+   P  0x508 Int        ReplayStreamMatchStartFrameNumber  pf=0x40000000000000
+   P  0x4f8 Str        MatchEndReason  pf=0x40000000000000
+   P  0x4e8 Str        NextMapURL  pf=0x40000000000000
+   P  0x4d8 Array      PendingRespawnPlayerIds  pf=0x40000000000000
+   P  0x4d4 Int        NextPlayerNameChangeRequestID  pf=0x40000000000000
+   P  0x4d0 Float      MatchEndedTimeStamp  pf=0x40000000000000
+   P  0x4cc Float      WaitingForServerWorkInProgress  pf=0x40000000000000
+   P  0x4c8 Float      WaitingForPlayersRemainingTime  pf=0x40000000002000
+   P  0x4c4 Float      WaitingToStartTime  pf=0x40000000000000
+   P  0x4c0 Float      ReturnToMenuTime  pf=0x40000000000000
+   P  0x4be Bool       bWaitingForServerUploads  pf=0x40000000000000
+   P  0x4bd Bool       bSentServerMatchEndedEvent  pf=0x40000000000000
+   P  0x4bc Bool       bSentServerMatchStartedEvent  pf=0x40000000000000
+   P  0x4bb Bool       bRequestedNextServer  pf=0x40000000000000
+   P  0x4ba Bool       bCalledPostMatchCountdownComplete  pf=0x40000000000000
+   P  0x4b9 Bool       bAllowAbandonedGameToEnd  pf=0x40000000000000
+   P  0x4b8 Bool       bSkipPreMatchCountdownRequested  pf=0x40000000000000
+   P  0x4b0 Object     SkillManager  pf=0x40000000000000
+   P  0x4ac Int        SendMatchEndedEventDelay  pf=0x10000000000015
+   P  0x4a8 Int        RetryRequestNextServerTimeout  pf=0x10000000000015
+   P  0x4a4 Int        RequestNextServerTimeout  pf=0x10000000000015
+   P  0x4a0 Int        WaitForServerUploadsTimeout  pf=0x10000000000015
+   P  0x49c Int        WaitingToStartTimeOut  pf=0x10000000000015
+   P  0x498 Int        PostMatchCountdownDuration  pf=0x10000000000015
+   P  0x494 Int        WarmUpPhaseDuration  pf=0x10000000000015
+   P  0x490 Int        PreMatchCountdownDuration  pf=0x10000000000015
+   P  0x48c Int        WaitingForPlayersTimeout  pf=0x10000000000015
+   P  0x488 Bool       bManualMatchStart  pf=0x10000000000015
+   F 0x4020401 Debug_EndGame()
+   F 0x4020401 Debug_SetTeams()
+   F 0x4020401 Debug_StartOvertime()
+   F 0x4020601 Debug_ToggleForceWaitingForPlayers()
+   F 0x54020401 GetRollbackMatchState(ReturnValue:Name)
+   F 0x4020401 GKStartGame()
+   F 0x4020401 RequestSkipPreMatchCountdown()
+   F 0x4020401 StartGame()
+=== MBRollbackGameState flags=0x9002a4 config=Game
+   P  0x478 Name       NotEnoughPlayersMessageId  pf=0x40000000004000
+   P  0x474 Int        TicksBetweenFragments  pf=0x40000000004000
+   P  0x470 Int        FragmentsPerSend  pf=0x40000000004000
+   P  0x450 Array      NetworkedReplays  pf=0x40000000000000
+   P  0x44b Bool       bForceSystemMessagesQueuingEnabled  pf=0x40000000000000
+   P  0x44a Bool       bHiddenLoadingScreen  pf=0x40000000000000
+   P  0x449 Bool       bCalledBeginMatchWarmUp  pf=0x40000000000000
+   P  0x448 Bool       bPreMatchInitCalled  pf=0x40000000000000
+   P  0x440 Object     PlayerCreatingVoiceChatNetwork  pf=0x40000000000000
+   P  0x420 Struct     VoiceChatNetworkInfo  pf=0x40000100000020
+   P  0x418 Bool       bCanDoServerMigration  pf=0x40000000000020
+   P  0x414 Float      PostMatchCountdownEndTimeSeconds  pf=0x40000000000020
+   P  0x410 Float      WarmUpStartTimeSeconds  pf=0x40000000000020
+   P  0x40c Float      PostMatchReplaySyncTimeSeconds  pf=0x40000000000020
+   P  0x408 Float      RollbackMatchStartTimeSeconds  pf=0x40000000000020
+   P  0x400 Name       PreviousRollbackMatchState  pf=0x40000000000000
+   P  0x3f8 Name       RollbackMatchState  pf=0x40000100000020
+   F 0x54020401 GetPostMatchCountdownTimeRemaining(ReturnValue:Float)
+   F 0x54020401 GetPostMatchReplaySyncTime(ReturnValue:Float)
+   F 0x54020401 GetPreMatchCountdownTimeRemaining(ReturnValue:Float)
+   F 0x54020401 GetTimeUntilWarmUp(ReturnValue:Float)
+   F 0x54020401 HasRollbackMatchStarted(ReturnValue:Bool)
+   F 0x44cc1 Internal_SendNextServerTravelURL(RequestedSessionCookieString:Str,TravelURL:Str)
+   F 0x44cc1 Internal_SendReplay_Begin(UncompressedSize:Int,NumFragments:Int,ReplayType:Enum)
+   F 0x44cc1 Internal_SendReplay_End(ReplayType:Enum)
+   F 0x44cc1 Internal_SendReplay_Fragment(CompressedReplayFragment:Struct,ReplayType:Enum)
+   F 0x44cc1 Internal_SendReplayMetadata(UncompressedSize:Int,ReplayMetadata:Array,ReplayType:Enum)
+   F 0x54020401 IsCharacterFreeToSelect(ReturnValue:Bool,ClassDescriptor:Object,Player:Object)
+   F 0x54420401 IsCharacterNameFreeToSelect(ReturnValue:Bool,ClassName:Name,Player:Object)
+   F 0x54020401 IsWaitingForPlayers(ReturnValue:Bool)
+   F 0x40401 OnNotEnoughPlayersMessageComplete(Result:Enum)
+   F 0x40401 OnRep_RollbackMatchState()
+   F 0x40401 OnRep_VoiceChatNetworkInfo()
+   F 0x40401 SendReplayFragment(ReturnValue:Bool)
+=== MBWorldSingleton flags=0x9000ae config=Game
+   P  0xc79 Bool       bGameEndFrameRetired  pf=0x40000000000000
+   P  0xc78 Bool       bAreProxyActorStatesStale  pf=0x40000000000000
+   P  0xc58 Array      ChatLog  pf=0x40000000000000
+   P  0xc50 Struct     ChatIdGenerator  pf=0x40000000000000
+   P  0xb90 Bool       bIsCharacterSelectScreenOpen  pf=0x40000000000000
+   P  0xb78 Float      GameStateInterpolationAlpha  pf=0x40000000000000
+   P  0xb20 Struct     ProxyActorFactory  pf=0x40000000000000
+   P  0xb10 Array      GlobalManagerObjectProxies  pf=0x40000000000000
+   P  0xb00 Array      PlayerClassRecords  pf=0x40000000000000
+   P  0xaf8 Enum       GameStatus  pf=0x40000000000000
+   P  0xae8 MulticastDelegate OnReplayStatusChanged  pf=0x40000000080000
+   P  0xad8 MulticastDelegate OnLocalPlayerTeamChanged  pf=0x40000000080000
+   P  0xad0 Int        LocalPlayerTeam  pf=0x40000000000000
+   P  0xa08 Float      PlayerClassLoadStartTime  pf=0x40000000000000
+   P  0xa04 Int        RequestedClasses  pf=0x40000000000000
+   P  0xa00 Int        PlayerClassesLoaded  pf=0x40000000000000
+   P  0x9f8 Object     PreLoadPlayerAssetHandler  pf=0x40000000000000
+   P  0x9f1 Bool       bWaitForPlayerClassesToLoad  pf=0x40000000000000
+   P  0x9f0 Bool       bUpdateGlobalManager  pf=0x40000000002000
+   P  0x9b0 Struct     PublicFrameHistoryMultiplexer  pf=0x40000000000000
+   P  0x9a0 Array      Machines  pf=0x40000000000000
+   P  0x998 Object     EventletCompiler  pf=0x40000000000000
+   P  0x990 Object     MachineGroup  pf=0x40000000000000
+   P  0x98d Bool       bIsInSpectatorMode  pf=0x40000000000000
+   P  0x8e8 Struct     RollbackEnginePublicFrameHistoryExtension  pf=0x40000000000000
+   P  0x8e0 Object     PredictedNextFrameState  pf=0x40000000000000
+   P  0x8d0 Array      MinimalTickProxies  pf=0x40008000000000
+   P  0x8c0 Array      PendingDestroyProxies  pf=0x40000000000000
+   P  0x8b0 Array      LocalPlayerStates  pf=0x40000000000000
+   P  0x8a0 Array      LocalPlayerActorIds  pf=0x40000000000000
+   P  0x890 Array      ActorInitialisers  pf=0x40000000000000
+   P  0x888 Object     RecordingWriter  pf=0x40000000000000
+   P  0x880 Object     RecordingReader  pf=0x40000000000000
+   P  0x878 Object     CachedMiniMapWorldObject  pf=0x40000000000000
+   P  0x870 Object     CommonLevelObjectProxy  pf=0x40000000000000
+   P  0x820 Map        ActiveActorsMap  pf=0x40000000000000
+   P  0x818 Object     GameplayManager  pf=0x40000000000000
+   P  0x810 Object     ConnectionManager  pf=0x40000000000000
+   P  0x7b8 Struct     HostMigrationManager  pf=0x40000000000000
+   P  0x7b0 Object     ServerPlaybackManager  pf=0x40000000000000
+   P  0x7a8 Object     CrowdManager  pf=0x40000000000000
+   P  0x7a0 Object     AudioSpeakerSystem  pf=0x40000000000000
+   P  0x798 Object     LocalPlayerProximityVO  pf=0x40000000000000
+   P  0x790 Object     HeroesBanterSystem  pf=0x40000000000000
+   P  0x788 Object     AudioImportanceSystem  pf=0x40000000000000
+   P  0x780 Object     EffectsManager  pf=0x40000000000000
+   P  0x778 Object     EffectsProxyActor  pf=0x40000000000000
+   P  0x770 Object     EffectsPlugin_VO  pf=0x40000000000000
+   P  0x768 Object     IncomingContactsPlugin  pf=0x40000000000000
+   P  0x760 Object     GlobalManagerMessagePlugin  pf=0x40000000000000
+   P  0x758 Object     ActorMessagePlugin  pf=0x40000000000000
+   P  0x750 Object     ServerProfiler  pf=0x40000000000000
+   P  0x748 Object     VisualEventManager  pf=0x40000000000000
+   P  0x740 Object     AIManager  pf=0x40000000000000
+   P  0x738 Object     PlayerInfoTracker  pf=0x40000000000000
+   P  0x730 Object     GlobalTimeDilationManager  pf=0x40000000000000
+   P  0x728 Object     AudioGameFlowManager  pf=0x40000000000000
+   P  0x720 Object     GameFlowManager  pf=0x40000000000000
+   P  0x718 Object     HighlightLikingManager  pf=0x40000000002000
+   P  0x710 Object     AFKManager  pf=0x40000000000000
+   P  0x708 Object     StatsManager  pf=0x40000000000000
+   P  0x700 Object     DeathTipsManager  pf=0x40000000000000
+   P  0x6f8 Object     ReplayManager  pf=0x40000000000000
+   P  0x6f0 Object     EngineInterface  pf=0x40000000000000
+   P  0x6e8 Object     RollbackObjectFactory  pf=0x40000000000000
+   P  0x6e0 Int        AsyncLoadsRemaining  pf=0x40000000000000
+   P  0x6d8 Object     PerformanceManager  pf=0x40000000000000
+   P  0x6d0 Object     FrontEnd  pf=0x40000000000000
+   P  0x6c8 Object     GraffitiManager  pf=0x40000000000000
+   P  0x6c0 Object     WidgetManager  pf=0x40000000080008
+   P  0x6b8 Bool       bCommonInitialised  pf=0x20080000000000
+   P  0x678 Class      LoadedConnectionManagerClass  pf=0x14000000000000
+   P  0x660 Struct     DefaultConnectionManagerClassName  pf=0x10000000004000
+   P  0x658 Class      LoadedCrowdManagerClass  pf=0x14000000000000
+   P  0x640 Struct     DefaultCrowdManagerClassName  pf=0x10000000004000
+   P  0x638 Class      LoadedAudioGameFlowManagerClass  pf=0x14000000000000
+   P  0x620 Struct     DefaultAudioGameFlowManagerClassName  pf=0x10000000004000
+   P  0x618 Class      LoadedGameFlowManagerClass  pf=0x14000000000000
+   P  0x600 Struct     DefaultGameFlowManagerClassName  pf=0x10000000004000
+   P  0x5f8 Class      LoadedAFKManagerClass  pf=0x14000000000000
+   P  0x5e0 Struct     DefaultAFKManagerClassName  pf=0x10000000004000
+   P  0x5d8 Class      LoadedDeathTipsManagerClass  pf=0x14000000000000
+   P  0x5c0 Struct     DefaultDeathTipsManagerClassName  pf=0x10000000004000
+   P  0x5b8 Class      LoadedReplayManagerClass  pf=0x14000000000000
+   P  0x5a0 Struct     DefaultReplayManagerClassName  pf=0x10000000004000
+   P  0x598 Class      LoadedLocalPlayerProximityVOClass  pf=0x14000000000000
+   P  0x580 Struct     DefaultLocalPlayerProximityVOClassName  pf=0x10000000004000
+   P  0x578 Class      LoadedHeroesBanterSystemClass  pf=0x14000000000000
+   P  0x560 Struct     DefaultHeroesBanterSystemClassName  pf=0x10000000004000
+   P  0x558 Class      LoadedAudioImportanceSystemClass  pf=0x14000000000000
+   P  0x540 Struct     DefaultAudioImportanceSystemClassName  pf=0x10000000004000
+   P  0x538 Class      LoadedEffectsManagerClass  pf=0x14000000000000
+   P  0x520 Struct     DefaultEffectsManagerClassName  pf=0x10000000004000
+   P  0x508 Struct     DebugPlayerControllerClassName  pf=0x10000000004000
+   P  0x4f0 Struct     DefaultPIEPlayerDataClassName  pf=0x10000000004000
+   P  0x4e8 Class      LoadedEmptyPlayerDataClass  pf=0x14000000000000
+   P  0x4d0 Struct     EmptyPlayerDataClassName  pf=0x10000000004000
+   F 0x14020401 AreAllClientsReadyToUnpause(ReturnValue:Bool)
+   F 0x4022401 GetCommonLevelObjectProxy(ReturnValue:Object,WorldContextObject:Object)
+   F 0x54020401 GetCurrentLocalPlayerState(ReturnValue:Object)
+   F 0x54020401 GetDeathTipsManager(ReturnValue:Object)
+   F 0x4020401 GetFrontEnd(ReturnValue:Object)
+   F 0x54020401 GetGameFlowManager(ReturnValue:Object)
+   F 0x4022401 GetMBWorldSingleton(ReturnValue:Object,WorldContextObject:Object)
+   F 0x54020401 GetPerformanceManager(ReturnValue:Object)
+   F 0x54020401 GetReplayManager(ReturnValue:Object)
+   F 0x54020401 GetStatsManager(ReturnValue:Object)
+   F 0x40401 OnPlayerClassLoadStatusChanged(LoadStatus:Enum,PlayerIndex:Int)
+   F 0x4420401 RegisterOnLocalPlayerChangedTeam(Callback:Delegate)
+   F 0x4020401 ReplayAddBookmark()
+   F 0x54020401 RollbackEngineWillBeInitialisedInThisMap(ReturnValue:Bool)
+   F 0x4020401 ServerPauseGame()
+   F 0x4020401 ServerUnpauseGame()
+   F 0x20401 SetUseHashChecking(UseHashing:Bool)
+   F 0x20401 TogglePersistentDebugDraw()
+   F 0x4420401 UnRegisterOnLocalPlayerChangedTeam(Callback:Delegate)
+   F 0x420401 UpdateBannedFXTags(BannedTags:Array)
+=== MBSessionOptions flags=0x1010a0 config=None
+   P   0x50 Array      ActiveMapModIds  pf=0x10000000000015
+   P   0x40 Array      PlayerMods  pf=0x4010000000000015
+   P   0x3b Bool       AllowCheats  pf=0x10000000000015
+   P   0x3a Bool       InfiniteStamina  pf=0x10000000000015
+   P   0x39 Bool       InfiniteSuper  pf=0x10000000000015
+   P   0x38 Bool       IgnoreCooldowns  pf=0x10000000000015
