@@ -9,7 +9,7 @@ if (-not $NoBoot) {
     & "$H\menu.ps1" -ExtraArgs '-be1v1devlobby' | Select-Object -Last 1
     & "$H\ctl.ps1" -Action boot -Instance 2 -ExtraArgs '-be1v1devlobby' | Select-Object -Last 1
 }
-& "$H\lua.ps1" -Code 'call(live(all("FE_MainMenuScreen_C"))[1], "OnCustomQueuePressed")' | Out-Null
+& "$H\dev.ps1" -Cmd 'lobby create' | Out-Null
 Start-Sleep 3
 & "$H\dev.ps1" -Instance 2 -Cmd 'lobby join 1' | Select-String 'lobby:'
 Start-Sleep 3

@@ -139,6 +139,9 @@ bool Resolve() {
     if (!gMM || !gFriends || !gUser || !gUtils) { Log("steam: interface missing"); return false; }
     Register(333, sizeof(GameLobbyJoinRequested_t), &OnLobbyJoinRequested);
     Register(337, sizeof(GameRichPresenceJoinRequested_t), &OnRichPresenceJoin);
+    Register(505, 24, [](void* p) {   // LobbyDataUpdate_t: proves callback delivery works (logged a few times)
+        static int n; if (n++ < 3) Log("steam: callback LobbyDataUpdate lobby=%llu", (unsigned long long)*(u64*)p);
+    });
     Log("steam: ready, me=%llu (%ls)", (unsigned long long)MyId(), MyName().c_str());
     return true;
 }

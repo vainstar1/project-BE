@@ -13,14 +13,18 @@ constexpr size_t OW_OptionName = 0x330, OW_IsTextValue = 0x361, OW_TextOptions =
 
 uo::UObject* gBox;                 // the settings scroll box we decorated
 uo::UObject* gRows[4];             // team size, score, objectives, capture
+uo::UObject* gAllMods;             // "All Map Mods" tick box
+uo::UObject* gModRows[32];         // one tick box per map modifier
+int gAllLast = -1;
 
 bool Visible(uo::UObject* w) { uo::Call c(w, L"GetParent"); return c.ok() && c.run().get<uo::UObject*>(L"ReturnValue"); }
 
 // The designer-placed Spectators row of the settings panel on screen (its parent is the rows' scroll box).
 uo::UObject* SpectatorsRow() {
     uo::UObject* cls = uo::FindClass(L"Widget_ShifterOption_C");
-    for (uo::UObject* w : uo::FindAllTransient(cls)) {
-        if (uo::Name(w) != L"Shifter_Spectators") continue;
+    static FName want = uo::MakeName(L"Shifter_Spectators");
+    for (uo::UObject* w : uo::FindAll(cls)) {
+        if (!uo::NameIs(w, want)) continue;
         // ...inside a Custom Game screen that is on screen
         for (uo::UObject* o = uo::OuterOf(w); o; o = uo::OuterOf(o))
             if (uo::Name(uo::ClassOf(o)) == L"CustomGameScreen_C") { if (Visible(o)) return w; break; }
@@ -72,6 +76,17 @@ void Decorate(uo::UObject* spectators) {
     o = rules::ScoreOptions(&n);     gRows[1] = MakeRow(box, cls, L"Score", o, n, v.score);
     o = rules::ObjectiveOptions(&n); gRows[2] = MakeRow(box, cls, L"Objectives", o, n, v.objectives);
     o = rules::CaptureOptions(&n);   gRows[3] = MakeRow(box, cls, L"Capturing", o, n, v.capture);
+    // Map modifiers: tick boxes like "Lock Teams".
+    if (uo::UObject* tick = Sibling(box, L"Tickbox_Teams")) {
+        uo::UObject* tcls = uo::ClassOf(tick);
+        const wchar_t* offOn[] = { L"Off", L"On" };
+        int nm = rules::NumMods();
+        bool all = nm > 0;
+        for (int i = 0; i < nm; i++) if (!(v.mods & (1u << i))) all = false;
+        gAllMods = MakeRow(box, tcls, L"All Map Mods", offOn, 2, all ? 1 : 0);
+        gAllLast = all ? 1 : 0;
+        for (int i = 0; i < nm && i < 32; i++) gModRows[i] = MakeRow(box, tcls, rules::ModName(i), offOn, 2, (v.mods >> i) & 1);
+    }
     Log("settings: rows added to %p", box);
 }
 }  // namespace
@@ -93,6 +108,8 @@ void Tick() {
     if (!gBox || !uo::IsLive(gBox) || !Visible(gBox)) {
         gBox = nullptr;
         for (auto& r : gRows) r = nullptr;
+        for (auto& r : gModRows) r = nullptr;
+        gAllMods = nullptr; gAllLast = -1;
         // Add our rows the first time the panel is open (rows added while it is collapsed never draw their values).
         if (uo::UObject* sp = SpectatorsRow()) {
             uo::UObject* menu = nullptr;
@@ -113,6 +130,20 @@ void Tick() {
     if (gRows[1] && uo::IsLive(gRows[1])) v.score = F<int32_t>(gRows[1], OW_Index);
     if (gRows[2] && uo::IsLive(gRows[2])) v.objectives = F<int32_t>(gRows[2], OW_Index);
     if (gRows[3] && uo::IsLive(gRows[3])) v.capture = F<int32_t>(gRows[3], OW_Index);
+    // "All Map Mods" switches every modifier row; the rows decide the actual set.
+    if (gAllMods && uo::IsLive(gAllMods)) {
+        int all = F<int32_t>(gAllMods, OW_Index);
+        if (gAllLast >= 0 && all != gAllLast)
+            for (int i = 0; i < rules::NumMods() && i < 32; i++)
+                if (gModRows[i] && uo::IsLive(gModRows[i]) && F<int32_t>(gModRows[i], OW_Index) != all)
+                { uo::Call(gModRows[i], L"ChangeOption").set<int32_t>(L"NewIndex", all).run();
+                  uo::Call(gModRows[i], L"AdjustWidgetToIndex").set<int32_t>(L"NewIndex", all).run(); }
+        gAllLast = all;
+    }
+    uint32_t mods = 0;
+    for (int i = 0; i < rules::NumMods() && i < 32; i++)
+        if (gModRows[i] && uo::IsLive(gModRows[i]) && F<int32_t>(gModRows[i], OW_Index) == 1) mods |= 1u << i;
+    if (gModRows[0] && uo::IsLive(gModRows[0])) v.mods = mods;
     rules::Values old = rules::Current();
     if (v.teamSize != old.teamSize) lobby::SetTeamSize(v.teamSize);
     rules::Set(v);

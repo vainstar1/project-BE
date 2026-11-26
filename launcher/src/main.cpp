@@ -224,6 +224,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         std::wstring err;
         if (Install(root, srcDir, &err) == Result::AccessDenied)
             RunElevated(L"--install-elevated " + Quote(root) + L" " + Quote(srcDir));
+        // --direct <args...>: developer test runs restart Launch_Game.exe directly with the old arguments.
+        if (argc > 3 && !wcscmp(argv[3], L"--direct")) {
+            std::wstring args;
+            for (int i = 4; i < argc; i++) { if (!args.empty()) args += L" "; args += Quote(argv[i]); }
+            std::wstring launch = root + L"\\Launch_Game.exe", cmd = Quote(launch) + L" " + args;
+            STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+            if (CreateProcessW(launch.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, root.c_str(), &si, &pi)) { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+            return 0;
+        }
         StartThroughSteam();
         return 0;
     }

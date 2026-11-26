@@ -25,6 +25,7 @@ inline FName NameOf(UObject* o) { return F<FName>(o, Obj_Name); }
 inline UObject* ClassOf(UObject* o) { return F<UObject*>(o, Obj_Class); }
 inline UObject* OuterOf(UObject* o) { return F<UObject*>(o, Obj_Outer); }
 std::wstring Name(UObject* o);
+inline bool NameIs(UObject* o, FName n) { FName a = F<FName>(o, 0x18); return a.Index == n.Index && a.Number == n.Number; }
 std::wstring FullPath(UObject* o);     // Outer.Outer.Name (no class prefix)
 bool IsA(UObject* o, UObject* cls);
 bool IsDefault(UObject* o);            // class default object or archetype
@@ -39,10 +40,13 @@ std::vector<UObject*> FindAll(UObject* cls);
 UObject* FindTransient(UObject* cls);                          // first runtime-created instance (outermost = /Engine/Transient)
 std::vector<UObject*> FindAllTransient(UObject* cls);
 UObject* Outermost(UObject* o);
+void IndexStep(int32_t budget);                                // scans a slice of the object array (call every frame)
 UObject* FindFunction(UObject* objOrClass, const wchar_t* name, bool isClass = false);
 UObject* FindProp(UObject* structObj, const wchar_t* name);    // walks supers
 int32_t PropOffset(UObject* structObj, const wchar_t* name);   // -1 if missing
 void ProcessEvent(UObject* obj, UObject* fn, void* parms);
+bool SetBool(UObject* obj, const wchar_t* prop, bool v);       // bitfield-aware bool property write
+bool GetBool(UObject* obj, const wchar_t* prop);
 
 // Calls a UFunction by name with a zeroed parameter block; set/get parameters by name.
 struct Call {

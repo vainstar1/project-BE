@@ -61,3 +61,15 @@ function _G.cgpress(what)
     call(s, ev[what])
     plog("pressed " .. what)
 end
+
+-- Widgets of a class inside the on-screen Custom Game screen.
+function _G.inscreen(clsname)
+    local s = cgscreen()
+    local out = {}
+    if not s then return out end
+    local sn = fname(s):match("[^%.]+$") .. "."
+    for _, w in pairs(live(all(clsname))) do
+        if fname(w):find(sn, 1, true) then out[#out + 1] = w end
+    end
+    return out
+end

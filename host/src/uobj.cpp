@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <unordered_map>
 #include <cstring>
+#include <algorithm>
 #include "uobj.h"
 
 namespace uo {
@@ -87,7 +88,10 @@ bool IsA(UObject* o, UObject* cls) {
 bool IsDefault(UObject* o) { return (F<int32_t>(o, Obj_Flags) & (RF_ClassDefaultObject | RF_ArchetypeObject)) != 0; }
 bool IsLive(UObject* o) {
     if (!o) return false;
-    FUObjectItem* it = Item(F<int32_t>(o, Obj_Index));
+    // The object may already be freed: read its index without faulting.
+    int32_t idx;
+    if (!ReadProcessMemory(GetCurrentProcess(), o + Obj_Index, &idx, sizeof idx, nullptr)) return false;
+    FUObjectItem* it = Item(idx);
     return it && it->Object == o && !(it->Flags & (EIF_PendingKill | EIF_Unreachable));
 }
 
@@ -99,9 +103,11 @@ static bool IsClassObject(UObject* o) {
 }
 
 UObject* FindClass(const wchar_t* name) {
-    auto it = gClassCache.find(name);
-    if (it != gClassCache.end() && IsLive(it->second)) return it->second;
     FName want = MakeName(name);
+    auto it = gClassCache.find(name);
+    // Blueprint classes get unloaded and reloaded between maps: re-validate the cached object completely.
+    if (it != gClassCache.end() && IsLive(it->second) && SameName(NameOf(it->second), want) && IsClassObject(it->second)) return it->second;
+    gClassCache.erase(name);
     int32_t n = NumObjects();
     for (int32_t i = 0; i < n; i++) {
         UObject* o = ObjectAt(i);
@@ -122,21 +128,29 @@ UObject* FindObjectPath(const wchar_t* path) {
     return nullptr;
 }
 
-UObject* FindFirst(UObject* cls, bool includeDefaults) {
-    if (!cls) return nullptr;
-    int32_t n = NumObjects();
-    for (int32_t i = 0; i < n; i++) {
-        FUObjectItem* it = Item(i);
-        UObject* o = it ? it->Object : nullptr;
-        if (!o || (it->Flags & (EIF_PendingKill | EIF_Unreachable))) continue;
-        if (!includeDefaults && IsDefault(o)) continue;
-        if (IsA(o, cls)) return o;
-    }
-    return nullptr;
+// ---- class index ------------------------------------------------------------------------------------------
+// A full walk of the object array touches ~460k objects and costs 20-60 ms, far too slow to do several times a
+// second. Instead, classes we search for are "tracked": IndexStep() scans a slice of the array every frame and keeps,
+// per tracked class, the objects found in the last complete sweep. Searches read that list (validated on access).
+namespace {
+struct Entry { UObject* obj; UObject* cls; int32_t idx; };
+struct Tracked { UObject* cls; std::vector<Entry> cur, next; bool swept; };
+std::vector<Tracked> gTracked;
+std::unordered_map<UObject*, uint32_t> gClassMask;    // object class -> bitmask of tracked classes it derives from
+int32_t gSweepPos;
+
+uint32_t MaskOf(UObject* objClass) {
+    auto it = gClassMask.find(objClass);
+    if (it != gClassMask.end()) return it->second;
+    uint32_t m = 0;
+    for (size_t i = 0; i < gTracked.size(); i++)
+        for (UObject* c = objClass; c; c = F<UObject*>(c, Struct_Super))
+            if (c == gTracked[i].cls) { m |= 1u << i; break; }
+    gClassMask[objClass] = m;
+    return m;
 }
-std::vector<UObject*> FindAll(UObject* cls) {
+std::vector<UObject*> FullScan(UObject* cls) {
     std::vector<UObject*> r;
-    if (!cls) return r;
     int32_t n = NumObjects();
     for (int32_t i = 0; i < n; i++) {
         FUObjectItem* it = Item(i);
@@ -145,6 +159,76 @@ std::vector<UObject*> FindAll(UObject* cls) {
         if (IsA(o, cls)) r.push_back(o);
     }
     return r;
+}
+Tracked* Track(UObject* cls) {
+    for (auto& t : gTracked) if (t.cls == cls) return &t;
+    if (gTracked.size() >= 32) return nullptr;
+    gTracked.push_back(Tracked{ cls, {}, {}, false });
+    gClassMask.clear();
+    Tracked& t = gTracked.back();
+    // First use: one full scan so the caller gets an answer now.
+    int32_t n = NumObjects();
+    for (int32_t i = 0; i < n; i++) {
+        FUObjectItem* it = Item(i);
+        UObject* o = it ? it->Object : nullptr;
+        if (!o || (it->Flags & (EIF_PendingKill | EIF_Unreachable)) || IsDefault(o)) continue;
+        if (IsA(o, cls)) t.cur.push_back({ o, ClassOf(o), i });
+    }
+    t.swept = true;
+    return &t;
+}
+}  // namespace
+
+void IndexStep(int32_t budget) {
+    if (gTracked.empty()) return;
+    int32_t n = NumObjects();
+    int32_t end = std::min(n, gSweepPos + budget);
+    for (int32_t i = gSweepPos; i < end; i++) {
+        FUObjectItem* it = Item(i);
+        UObject* o = it ? it->Object : nullptr;
+        if (!o || (it->Flags & (EIF_PendingKill | EIF_Unreachable))) continue;
+        UObject* c = ClassOf(o);
+        uint32_t m = c ? MaskOf(c) : 0;
+        if (!m || IsDefault(o)) continue;
+        for (size_t k = 0; k < gTracked.size(); k++) if (m & (1u << k)) gTracked[k].next.push_back({ o, c, i });
+    }
+    gSweepPos = end;
+    if (gSweepPos >= n) {
+        gSweepPos = 0;
+        for (auto& t : gTracked) { t.cur.swap(t.next); t.next.clear(); }
+        if (gClassMask.size() > 200000) gClassMask.clear();
+    }
+}
+
+std::vector<UObject*> FindAll(UObject* cls) {
+    std::vector<UObject*> r;
+    if (!cls) return r;
+    Tracked* t = Track(cls);
+    if (!t) return FullScan(cls);
+    // Validate through the object array only (the object itself may be freed memory by now).
+    auto valid = [](const Entry& e) {
+        FUObjectItem* it = Item(e.idx);
+        return it && it->Object == e.obj && !(it->Flags & (EIF_PendingKill | EIF_Unreachable)) && ClassOf(e.obj) == e.cls;
+    };
+    for (auto& e : t->cur) if (valid(e)) r.push_back(e.obj);
+    // Objects found so far in the running sweep (newly created ones) as well.
+    for (auto& e : t->next) if (valid(e) && std::find(r.begin(), r.end(), e.obj) == r.end()) r.push_back(e.obj);
+    return r;
+}
+UObject* FindFirst(UObject* cls, bool includeDefaults) {
+    if (!cls) return nullptr;
+    if (!includeDefaults) { auto v = FindAll(cls); return v.empty() ? nullptr : v[0]; }
+    // Class default objects never go away: cache them.
+    static std::unordered_map<UObject*, UObject*> cdo;
+    auto it = cdo.find(cls);
+    if (it != cdo.end() && IsLive(it->second)) return it->second;
+    int32_t n = NumObjects();
+    for (int32_t i = 0; i < n; i++) {
+        FUObjectItem* item = Item(i);
+        UObject* o = item ? item->Object : nullptr;
+        if (o && IsA(o, cls)) { if (IsDefault(o)) cdo[cls] = o; return o; }
+    }
+    return nullptr;
 }
 
 UObject* Outermost(UObject* o) { while (o && OuterOf(o)) o = OuterOf(o); return o; }
@@ -178,6 +262,21 @@ UObject* FindProp(UObject* st, const wchar_t* name) { return st ? FindChild(st, 
 int32_t PropOffset(UObject* st, const wchar_t* name) {
     UObject* p = FindProp(st, name);
     return p ? F<int32_t>(p, Prop_Offset) : -1;
+}
+
+// UBoolProperty: FieldSize 0x70, ByteOffset 0x71, ByteMask 0x72, FieldMask 0x73 (after the 0x70-byte UProperty).
+bool SetBool(UObject* obj, const wchar_t* prop, bool v) {
+    UObject* p = obj ? FindProp(ClassOf(obj), prop) : nullptr;
+    if (!p) return false;
+    uint8_t* b = obj + F<int32_t>(p, Prop_Offset) + F<uint8_t>(p, 0x71);
+    uint8_t mask = F<uint8_t>(p, 0x72);
+    *b = v ? (*b | mask) : (*b & ~mask);
+    return true;
+}
+bool GetBool(UObject* obj, const wchar_t* prop) {
+    UObject* p = obj ? FindProp(ClassOf(obj), prop) : nullptr;
+    if (!p) return false;
+    return (obj[F<int32_t>(p, Prop_Offset) + F<uint8_t>(p, 0x71)] & F<uint8_t>(p, 0x72)) != 0;
 }
 
 void ProcessEvent(UObject* obj, UObject* fn, void* parms) {

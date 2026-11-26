@@ -50,6 +50,9 @@ static_assert(sizeof(Member) == 0x38, "Member");
 struct Team { FString Name; int32_t Num; int32_t Max; };
 static_assert(sizeof(Team) == 0x18, "Team");
 
+DWORD gBrowseWait;
+std::function<void()> gBrowseDone;
+
 std::wstring W(const std::string& s) { return Utf8ToWide(s); }
 std::string N(const std::wstring& s) { return WideToUtf8(s); }
 std::string I(long long v) { return std::to_string(v); }
@@ -62,7 +65,7 @@ struct Backend {
     virtual uint64_t Me() = 0;
     virtual std::wstring NameOf(uint64_t id) = 0;
     virtual void Create(int privacy, int maxMembers, std::function<void(bool, uint64_t)> done) = 0;
-    virtual void Join(uint64_t id, std::function<void(bool)> done) = 0;
+    virtual void Join(uint64_t id, std::function<void(bool, int)> done) = 0;   // (ok, Steam chat-room enter response)
     virtual void Leave(uint64_t id) = 0;
     virtual void Set(uint64_t id, const char* k, const std::string& v) = 0;
     virtual std::string Get(uint64_t id, const char* k) = 0;
@@ -73,6 +76,8 @@ struct Backend {
     virtual void SetPrivacy(uint64_t, int) {}
     virtual void SetLimit(uint64_t, int) {}
     virtual std::wstring HostAddress() = 0;     // what members travel to
+    // Joinable lobbies of this mod: friends' games first, then public ones. Data must be readable with Get().
+    virtual void Browse(std::function<void(std::vector<uint64_t>)> done) = 0;
     virtual std::wstring ListenOptions() { return L"?listen"; }
     virtual void Tick() {}
 };
@@ -83,7 +88,7 @@ struct SteamBackend : Backend {
     std::wstring NameOf(uint64_t id) override { return id == Me() ? steam::MyName() : steam::NameOf(id); }
     static steam::LobbyType Type(int privacy) { return privacy == 0 ? steam::Public : privacy == 1 ? steam::FriendsOnly : steam::Private; }
     void Create(int privacy, int maxMembers, std::function<void(bool, uint64_t)> done) override { steam::CreateLobby(Type(privacy), maxMembers, done); }
-    void Join(uint64_t id, std::function<void(bool)> done) override { steam::JoinLobby(id, [done](bool ok, uint64_t, int) { done(ok); }); }
+    void Join(uint64_t id, std::function<void(bool, int)> done) override { steam::JoinLobby(id, [done](bool ok, uint64_t, int r) { done(ok, r); }); }
     void Leave(uint64_t id) override { steam::LeaveLobby(id); }
     void Set(uint64_t id, const char* k, const std::string& v) override { steam::SetLobbyData(id, k, v); }
     std::string Get(uint64_t id, const char* k) override { return steam::LobbyData(id, k); }
@@ -94,6 +99,18 @@ struct SteamBackend : Backend {
     void SetPrivacy(uint64_t id, int p) override { steam::SetLobbyType(id, Type(p)); }
     void SetLimit(uint64_t id, int n) override { steam::SetMemberLimit(id, n); }
     std::wstring HostAddress() override { return L"steam." + std::to_wstring(Me()); }
+    void Browse(std::function<void(std::vector<uint64_t>)> done) override {
+        // Friends in this game who sit in a lobby (friends-only lobbies are not listed publicly).
+        auto friends = std::make_shared<std::vector<uint64_t>>();
+        for (auto& f : steam::Friends()) if (f.inGame && f.lobby) { friends->push_back(f.lobby); steam::RequestLobbyData(f.lobby); }
+        steam::RequestLobbyList({ { "be1v1", BE1V1_PROTOCOL } }, [friends, done](std::vector<uint64_t> pub) {
+            std::vector<uint64_t> all = *friends;
+            for (uint64_t l : pub) if (std::find(all.begin(), all.end(), l) == all.end()) all.push_back(l);
+            // Friends' lobby data arrives asynchronously; give it a moment.
+            gBrowseWait = GetTickCount() + 1200;
+            gBrowseDone = [all, done]() { done(all); };
+        });
+    }
 };
 
 // Local test backend (-be1v1devlobby): two instances on one PC share a folder; transport is 127.0.0.1.
@@ -137,10 +154,10 @@ struct DevBackend : Backend {
         Write(dir + L"lobby.kv", cache);
         Touch(); done(true, 1);
     }
-    void Join(uint64_t, std::function<void(bool)> done) override {
+    void Join(uint64_t, std::function<void(bool, int)> done) override {
         bool ok = GetFileAttributesW((dir + L"lobby.kv").c_str()) != INVALID_FILE_ATTRIBUTES;
         if (ok) { joined = true; Touch(); }
-        done(ok);
+        done(ok, ok ? 1 : 2);
     }
     void Leave(uint64_t) override {
         joined = false;
@@ -168,6 +185,12 @@ struct DevBackend : Backend {
     uint64_t Owner(uint64_t) override { return (uint64_t)ToI(Get(1, "owner")); }
     std::wstring HostAddress() override { return L"127.0.0.1:7777"; }
     std::wstring ListenOptions() override { return L"?listen?bIsLanMatch"; }
+    void Browse(std::function<void(std::vector<uint64_t>)> done) override {
+        std::vector<uint64_t> r;
+        cache = Read(dir + L"lobby.kv");
+        if (!cache.empty()) r.push_back(1);
+        done(r);
+    }
     DWORD lastTouch = 0;
     void Touch() { auto m = Read(MemberFile(me)); m["name"] = N(steam::Ready() ? steam::MyName() : L"Player " + std::to_wstring(me % 100000)); Write(MemberFile(me), m); }
     void Tick() override {
@@ -234,6 +257,10 @@ uint8_t* RowFor(int idx) {
     }
     return gPlaygroundRow;
 }
+std::wstring MapName(int idx) {
+    uint8_t* row = RowFor(idx);
+    return row ? ui::TextToString(row + MI_Text) : L"";
+}
 std::wstring MapPath(int idx) { return idx >= 0 && idx < kNumMaps ? kMaps[idx] : kMaps[0]; }
 bool IsTrainingMap(int idx) { return idx == kDojoIdx || idx == kPlaygroundIdx; }
 
@@ -255,6 +282,12 @@ void __fastcall hkGetMapList(void* ctx, TArray<uint8_t>* out, bool includeDev) {
 enum class St { Idle, Creating, Joining, Lobby };
 St gSt = St::Idle;
 uint64_t gId;                       // lobby id
+uint64_t gPendingJoin;              // invite accepted while not on the main menu
+bool gWantScreen;                   // show the lobby screen as soon as the main menu allows
+uint64_t gHostId;                   // the lobby owner we know (to notice a host leaving)
+std::wstring gPendingMessage;
+std::string gMemberSnap;            // member: last lobby data applied to the screen
+uo::UObject* gDecorated;            // lobby screen we added LEAVE to
 bool gHost;
 std::map<uint64_t, int> gTeam;      // host: authoritative team assignment
 std::map<uint64_t, long long> gReqSeen;
@@ -301,7 +334,10 @@ bool __fastcall hkIsInLobbyImpl(void*);
 bool __fastcall hkIsLeaderImpl(void*);
 using BoolFn = bool(__fastcall*)(void*);
 BoolFn oIsInLobby, oIsLeader, oCanStart, oTryStart;
-bool __fastcall hkIsInLobbyImpl(void* self) { return gSt == St::Lobby; }
+// While the player has stepped out to the main menu, the lobby reports "not in a lobby" to the front end: the screen
+// then closes itself and the main menu doesn't bring it back. We stay in the Steam lobby all the same.
+bool gScreenHidden;
+bool __fastcall hkIsInLobbyImpl(void* self) { return gSt == St::Lobby && !gScreenHidden; }
 bool __fastcall hkIsLeaderImpl(void* self) { return gSt == St::Lobby && gHost; }
 
 // Fills the manager's (garbage-collected) TArray<FMBCustomGameMember> with our member list.
@@ -362,10 +398,8 @@ int TeamMax(uo::UObject* m, int t) { return t < 0 ? F<Team>(m, CGM_Spectators).M
 int AutoTeam(uo::UObject* m) {
     int c[2] = { 0, 0 };
     for (auto& kv : gTeam) if (kv.second == 0 || kv.second == 1) c[kv.second]++;
-    int t = c[0] <= c[1] ? 0 : 1;
-    if (c[t] < TeamMax(m, t)) return t;
-    if (c[1 - t] < TeamMax(m, 1 - t)) return 1 - t;
-    return -1;
+    (void)m;
+    return c[0] <= c[1] ? 0 : 1;
 }
 int CountTeam(int t) { int n = 0; for (auto& kv : gTeam) if (kv.second == t) n++; return n; }
 
@@ -416,6 +450,8 @@ void HostSync(uo::UObject* m) {
         { "addr", N(gB->HostAddress()) },
         { "map", N(MapPath(roster.Num ? roster.Data[F<int32_t>(m, CGM_CurrentMap) % roster.Num] : 0)) },
         { "rules", rules::Encode() },
+        { "mapname", N(MapName(roster.Num ? roster.Data[F<int32_t>(m, CGM_CurrentMap) % roster.Num] : 0)) },
+        { "max", I(2 * (&F<Team>(m, CGM_Teams))[0].Max) },
     };
     std::string snap;
     for (auto& e : kv) snap += e.first + "=" + e.second + "\n";
@@ -449,9 +485,8 @@ void MemberSync(uo::UObject* m) {
                        gB->Get(gId, "priv") + "|" + gB->Get(gId, "lock") + "|" + gB->Get(gId, "tn0") + "|" + gB->Get(gId, "tn1") + "|" +
                        gB->Get(gId, "tm0") + gB->Get(gId, "tm1") + gB->Get(gId, "tms") + "|" + I((long long)members.size()) + "|" +
                        gB->Get(gId, "rules");
-    static std::string last;
-    if (snap == last) return;
-    last = snap;
+    if (snap == gMemberSnap) return;
+    gMemberSnap = snap;
     WriteMembers(m, list, gB->Owner(gId));
     rules::Set(rules::Decode(gB->Get(gId, "rules")));
     uo::SetFString(F<FString>(m, CGM_GameName), W(gB->Get(gId, "name")));
@@ -490,7 +525,7 @@ void InitManagerAsHost(uo::UObject* m) {
     Team* t = &F<Team>(m, CGM_Teams);
     t[0].Max = t[1].Max = rules::Current().teamSize;
     uo::SetFString(t[0].Name, L""); uo::SetFString(t[1].Name, L"");
-    F<Team>(m, CGM_Spectators).Max = 0;
+    F<Team>(m, CGM_Spectators).Max = 4;
     F<bool>(m, CGM_IsLeader) = true;
     F<bool>(m, CGM_TeamsLocked) = false;
     F<uint8_t>(m, CGM_Privacy) = 1;   // friends
@@ -504,7 +539,7 @@ void InitManagerAsHost(uo::UObject* m) {
 
 void Enter(uint64_t id, bool host) {
     gId = id; gHost = host; gSt = St::Lobby;
-    gTeam.clear(); gReqSeen.clear(); gLastPublished.clear(); gInMatch = false;
+    gTeam.clear(); gReqSeen.clear(); gLastPublished.clear(); gInMatch = false; gMemberSnap.clear(); gDecorated = nullptr;
     gSeq = host ? 0 : ToI(gB->Get(id, "seq"));
     gSeenSeq = gSeq;
     if (!host && gB->Get(id, "state") == "game") gSeenSeq = -1;   // a match is running: join it
@@ -512,15 +547,18 @@ void Enter(uint64_t id, bool host) {
     if (m && host) InitManagerAsHost(m);
     if (m && !host) F<bool>(m, CGM_IsLeader) = false;
     gB->SetMine(id, "ver", BE1V1_VERSION);
+    gHostId = gB->Owner(id);
     steam::SetRichPresence("connect", ("+connect_lobby " + I((long long)id)).c_str());
     steam::SetRichPresence("status", "In a custom game lobby");
     Log("lobby: entered %llu as %s", (unsigned long long)id, host ? "host" : "member");
 }
 
 void ShowLobbyScreen() {
+    gScreenHidden = false;
     uo::UObject* cls = uo::FindObjectPath(L"/Game/UI/FrontEnd/CustomGame/CustomGameScreen.CustomGameScreen_C");
     if (!cls) return;
     if (Screen()) return;   // already up
+    Log("lobby: showing the lobby screen");
     uo::UObject* fe = uo::FindFirst(uo::FindClass(L"MBFrontEnd"));
     if (!fe) return;
     uo::Call(fe, L"PushScreen").set<uo::UObject*>(L"ScreenClass", cls).set<uo::UObject*>(L"PlayerController", nullptr).run();
@@ -533,6 +571,56 @@ std::wstring NameOption() {
     if (clean.empty()) return L"";
     if (clean.size() > 20) clean.resize(20);
     return L"?Name=" + clean;
+}
+
+// The lobby screen has two hidden debug buttons; they become LEAVE in the host's and the members' button column,
+// styled like INVITE.
+uo::UObject* ScreenWidget(uo::UObject* scr, const wchar_t* cls, const wchar_t* name) {
+    FName want = uo::MakeName(name);
+    for (uo::UObject* w : uo::FindAll(uo::FindClass(cls))) {
+        if (!uo::NameIs(w, want)) continue;
+        for (uo::UObject* o = uo::OuterOf(w); o; o = uo::OuterOf(o)) if (o == scr) return w;
+    }
+    return nullptr;
+}
+void DecorateScreen() {
+    uo::UObject* scr = Screen();
+    if (!scr || scr == gDecorated) return;
+    uo::UObject* invite = ScreenWidget(scr, L"PromptListButtonTemplate_C", L"Button_Invite");
+    uo::UObject* hostView = ScreenWidget(scr, L"VerticalBox", L"HostView");
+    uo::UObject* clientView = ScreenWidget(scr, L"VerticalBox", L"ClientView");
+    if (!invite || !hostView || !clientView) return;
+    gDecorated = scr;
+    int fontOff = uo::PropOffset(uo::FindClass(L"TextBlock"), L"Font");
+    uo::UObject* inviteText = F<uo::UObject*>(invite, 0x4b0);
+    std::pair<const wchar_t*, uo::UObject*> moves[] = { { L"Debug_FetchSessionData", hostView }, { L"Debug_UpdateSessionData", clientView } };
+    for (auto& mv : moves) {
+        uo::UObject* b = ScreenWidget(scr, L"PromptListButtonTemplate_C", mv.first);
+        if (!b) continue;
+        uo::Call(b, L"RemoveFromParent").run();
+        uo::Call add(mv.second, L"AddChild");
+        uo::UObject* slot = add.set<uo::UObject*>(L"Content", b).run().get<uo::UObject*>(L"ReturnValue");
+        uo::UObject* invSlot = F<uo::UObject*>(invite, uo::PropOffset(uo::FindClass(L"Widget"), L"Slot"));
+        if (slot && invSlot) {
+            uo::UObject* sc = uo::ClassOf(invSlot);
+            int ha = uo::PropOffset(sc, L"HorizontalAlignment"), pad = uo::PropOffset(sc, L"Padding");
+            if (ha >= 0) uo::Call(slot, L"SetHorizontalAlignment").set<uint8_t>(L"InHorizontalAlignment", F<uint8_t>(invSlot, ha)).run();
+            if (pad >= 0) { uo::Call c(slot, L"SetPadding"); int o = c.off(L"InPadding"); if (o >= 0) { memcpy(c.buf.data() + o, invSlot + pad, 16); c.run(); } }
+        }
+        F<int32_t>(b, 0x760) = F<int32_t>(invite, 0x760);   // TextSize
+        F<uint8_t>(b, 0x75c) = F<uint8_t>(invite, 0x75c);   // Justification
+        F<uint8_t>(b, 0x75d) = F<uint8_t>(invite, 0x75d);   // TextSlotAlignment
+        uo::UObject* tb = F<uo::UObject*>(b, 0x4b0);        // ButtonText
+        if (tb && inviteText && fontOff >= 0) {
+            uo::Call f(tb, L"SetFont");
+            int a = f.off(L"InFontInfo");
+            if (a >= 0) { memcpy(f.buf.data() + a, inviteText + fontOff, 0x50); f.run(); }
+            uo::Call(tb, L"SetJustification").set<uint8_t>(L"Justification", F<uint8_t>(invite, 0x75c)).run();
+        }
+        if (tb) { uo::FText t; uo::MakeText(&t, L"LEAVE"); uo::Call(tb, L"SetText").set(L"InText", t).run(); }
+        uo::Call(b, L"SetVisibility").set<uint8_t>(L"InVisibility", 0).run();
+    }
+    Log("lobby: screen decorated");
 }
 
 // ---- hooks ----------------------------------------------------------------------------------------------------
@@ -691,22 +779,34 @@ void CreateAsHost() {
         if (!ok) { gSt = St::Idle; ui::ShowMessage(L"Custom Game", L"Couldn't create the lobby. Check your connection to Steam."); return; }
         Enter(id, true);
         if (Mgr()) HostSync(Mgr());
-        ShowLobbyScreen();
+        gWantScreen = true;
     });
 }
 
 void JoinById(uint64_t id) {
-    if (!gB) return;
+    if (!gB || !id) return;
+    // Invites can arrive on the title screen or during a match: join once the main menu is up.
+    if (!net::MenuSettled() && !(gSt == St::Lobby && gId == id)) { gPendingJoin = id; Log("lobby: join %llu queued", (unsigned long long)id); return; }
     if (gSt == St::Lobby && gId == id) { ShowLobbyScreen(); return; }
     if (gSt == St::Lobby) Leave();
     if (gSt != St::Idle) return;
     gSt = St::Joining;
     ui::ShowBusy(true);
-    gB->Join(id, [id](bool ok) {
+    gB->Join(id, [id](bool ok, int response) {
         ui::ShowBusy(false);
-        if (!ok) { gSt = St::Idle; ui::ShowMessage(L"Custom Game", L"That game is no longer available."); return; }
+        if (!ok) {
+            gSt = St::Idle;
+            Log("lobby: join %llu failed, response %d", (unsigned long long)id, response);
+            const wchar_t* why = response == 4 ? L"That game is full."
+                               : response == 3 ? L"That game is invite only. Ask the host for an invite."
+                               : response == 2 ? L"That game no longer exists."
+                               : response == 10 || response == 11 ? L"You can't join this player's game."
+                               : L"Couldn't join that game. Check your connection to Steam and try again.";
+            ui::ShowMessage(L"", why);
+            return;
+        }
         Enter(id, gB->Owner(id) == gB->Me());
-        ShowLobbyScreen();
+        gWantScreen = true;
     });
 }
 
@@ -714,7 +814,7 @@ void Leave() {
     if (gSt == St::Idle) return;
     Log("lobby: leaving %llu", (unsigned long long)gId);
     if (gId) gB->Leave(gId);
-    gSt = St::Idle; gId = 0; gHost = false; gInMatch = false;
+    gSt = St::Idle; gId = 0; gHost = false; gInMatch = false; gWantScreen = false; gHostId = 0;
     net::CancelJoin();
     ResetManager();
     steam::ClearRichPresence();
@@ -732,6 +832,81 @@ void SetTeamSize(int perTeam) {
         if ((kv.second == 0 || kv.second == 1) && CountTeam(kv.second) > perTeam && CountTeam(1 - kv.second) < perTeam) kv.second = 1 - kv.second;
     Log("lobby: team size %d", perTeam);
     HostSync(m);
+}
+
+// CUSTOM GAME on the main menu: friends' and public games, plus CREATE GAME.
+void OpenBrowser() {
+    if (!gB) return;
+    if (!gB->Ready()) { ui::ShowMessage(L"", L"Steam isn't available. Make sure Steam is running."); return; }
+    ui::ShowBusy(true);
+    gB->Browse([](std::vector<uint64_t> ids) {
+        ui::ShowBusy(false);
+        std::vector<std::wstring> rows = { L"CREATE GAME" };
+        std::vector<uint64_t> ok;
+        for (uint64_t id : ids) {
+            if (gB->Get(id, "be1v1") != BE1V1_PROTOCOL) continue;
+            std::wstring name = W(gB->Get(id, "name")), map = W(gB->Get(id, "mapname"));
+            long long n = ToI(gB->Get(id, "n")), max = ToI(gB->Get(id, "max"), 8);
+            if (name.empty()) continue;
+            std::wstring row = name;
+            if (!map.empty()) row += L"   " + map;
+            row += L"   " + std::to_wstring(n) + L"/" + std::to_wstring(max);
+            if (gB->Get(id, "state") == "game") row += L"   IN MATCH";
+            rows.push_back(row);
+            ok.push_back(id);
+        }
+        Log("lobby: browser shows %d game(s)", (int)ok.size());
+        rows.push_back(L"REFRESH");
+        int refresh = (int)rows.size() - 1;
+        ui::List(L"", rows, L"", L"", [ok, refresh](int c) {
+            if (c == 0) CreateAsHost();
+            else if (c == refresh) OpenBrowser();
+            else if (c > 0 && c - 1 < (int)ok.size()) JoinById(ok[c - 1]);
+        });
+    });
+}
+
+// Lobby screen BACK: keep the lobby and return to the main menu (LEAVE is the way out).
+bool gLeaving;
+bool OnBackPressed() {
+    if (gSt != St::Lobby) return false;
+    if (gLeaving) { gLeaving = false; return false; }   // our LEAVE button: let the game ask "Leaving so soon?"
+    gScreenHidden = true;
+    Log("lobby: back to the main menu (still in the lobby)");
+    return true;
+}
+
+// The lobby screen's hidden debug button becomes LEAVE.
+bool OnListButton(void* btn) {
+    uo::UObject* b = (uo::UObject*)btn;
+    std::wstring bn = uo::Name(b);
+    Log("lobby: list button %ls", bn.c_str());
+    if (gSt != St::Lobby || (bn != L"Debug_FetchSessionData" && bn != L"Debug_UpdateSessionData")) return false;
+    uo::UObject* scr = Screen();
+    if (!scr) return false;
+    gLeaving = true;
+    uo::Call(scr, L"BndEvt__FE_CustomGameMenu_K2Node_ComponentBoundEvent_55_OnLeaveGamePressed__DelegateSignature").run();
+    gLeaving = false;
+    return true;
+}
+
+// Team slot clicked (mouse): your own slot or an empty slot moves you; the host's click on someone moves them.
+bool OnSlotPressed(void* slotPtr) {
+    if (gSt != St::Lobby) return false;
+    uo::UObject* slot = (uo::UObject*)slotPtr;
+    int team = F<int32_t>(slot, 0x480);
+    bool occupied = F<bool>(slot, 0x4a8), local = F<bool>(slot, 0x4aa);
+    Log("lobby: slot pressed team=%d occupied=%d local=%d", team, occupied, local);
+    uo::UObject* m = Mgr();
+    if (!m) return true;
+    if (!occupied) { if (team >= -1 && team <= 1) RequestTeam(team); return true; }
+    uint64_t id = _wcstoui64(F<FString>(slot, 0x4b0).c_str(), nullptr, 10);
+    if (local || id == gB->Me()) { int cur = gHost ? gTeam[gB->Me()] : team; RequestTeam(cur == 0 ? 1 : 0); return true; }
+    if (gHost && id && gTeam.count(id)) {
+        int to = gTeam[id] == 0 ? 1 : 0;
+        if (CountTeam(to) < TeamMax(m, to)) { gTeam[id] = to; Log("lobby: host moved %llu to team %d", (unsigned long long)id, to); HostSync(m); }
+    }
+    return true;
 }
 
 void OpenInvite() {
@@ -754,20 +929,40 @@ void OnMatchEnded() {
 
 void Tick(float dt) {
     if (!gB) return;
-    gB->Tick();
     steam::Tick();
-    if (!gPendingJoinFromCmdline.empty() && net::InFrontend() && uo::FindFirst(uo::FindClass(L"FE_MainMenuScreen_C"))) {
-        uint64_t id = _wcstoui64(gPendingJoinFromCmdline.c_str(), nullptr, 10);
-        gPendingJoinFromCmdline.clear();
-        if (id) JoinById(id);
-    }
-    if (gSt != St::Lobby) return;
     DWORD now = GetTickCount();
     if (now - gLastSync < 250) return;
     gLastSync = now;
-
-    // Ownership can move (Steam picks a new owner when the host leaves).
-    bool host = gB->Owner(gId) == gB->Me();
+    gB->Tick();
+    if (gBrowseDone && now > gBrowseWait) { auto f = gBrowseDone; gBrowseDone = nullptr; f(); }
+    if (!gPendingJoinFromCmdline.empty()) {
+        gPendingJoin = _wcstoui64(gPendingJoinFromCmdline.c_str(), nullptr, 10);
+        gPendingJoinFromCmdline.clear();
+    }
+    bool menuReady = ui::MainMenuReady();
+    if (gPendingJoin && net::MenuSettled() && (gSt == St::Idle || gSt == St::Lobby)) { uint64_t id = gPendingJoin; gPendingJoin = 0; JoinById(id); return; }
+    if (gSt != St::Lobby) return;
+    // The lobby screen: shown after creating/joining, and whenever the main menu comes back while a match is
+    // not running (e.g. after a match). Closing it with BACK keeps the lobby.
+    // (The main menu itself opens the screen as soon as it sees we're in a lobby; then there's nothing left to do.)
+    if (gWantScreen && Screen()) gWantScreen = false;
+    if (gWantScreen && menuReady) { gWantScreen = false; ShowLobbyScreen(); }
+    DecorateScreen();
+    // Ownership can move (Steam picks a new owner when the host leaves): the lobby carries on with the new owner.
+    // Members who were playing on the old host's server go back to the menu.
+    uint64_t owner = gB->Owner(gId);
+    if (!gHost && gHostId && owner && owner != gHostId) {
+        Log("lobby: host left");
+        if (net::InNetGame() || net::Joining()) {
+            net::Travel(L"/Game/Levels/FrontEnd/Map_FrontEnd_3D");
+            gInMatch = false;
+            gPendingMessage = L"The host left the game.";
+        }
+        gHostId = owner;
+    }
+    if (!gHostId) gHostId = owner;
+    if (!gPendingMessage.empty() && menuReady) { ui::ShowMessage(L"", gPendingMessage); gPendingMessage.clear(); gWantScreen = true; }
+    bool host = owner == gB->Me();
     if (host != gHost) {
         Log("lobby: host role %d -> %d", gHost, host);
         gHost = host;
@@ -777,7 +972,7 @@ void Tick(float dt) {
     bool inMenu = net::MenuSettled();
     if (gInMatch && inMenu && !net::Joining()) {
         static DWORD backSince; if (!backSince) backSince = now;
-        if (now - backSince > 3000) { backSince = 0; Log("lobby: back in the menu"); OnMatchEnded(); }
+        if (now - backSince > 3000) { backSince = 0; Log("lobby: back in the menu"); OnMatchEnded(); gWantScreen = true; }
     }
     if (inMenu && now < gSlotFixUntil) FixSlotVisibility();
     uo::UObject* m = Mgr();
@@ -786,17 +981,17 @@ void Tick(float dt) {
 
     MemberSync(m);
     long long seq = ToI(gB->Get(gId, "seq"));
-    if (gB->Get(gId, "state") == "game" && seq != gSeenSeq && inMenu) {
+    std::string teams = gB->Get(gId, "teams");
+    std::string me = I((long long)gB->Me()) + ":";
+    size_t p = teams.find(me);
+    // Join a running match once the host has given us a team (it does within a second of us joining the lobby).
+    if (gB->Get(gId, "state") == "game" && seq != gSeenSeq && inMenu && p != std::string::npos) {
         gSeenSeq = seq;
-        std::string teams = gB->Get(gId, "teams");
-        std::string me = I((long long)gB->Me()) + ":";
-        size_t p = teams.find(me);
         gMyTeamInMatch = p == std::string::npos ? 0 : (int)ToI(teams.substr(p + me.size()));
-        if (gMyTeamInMatch < 0) { Log("lobby: spectating, staying in the menu"); return; }
         gInMatch = true;
         std::wstring addr = W(gB->Get(gId, "addr"));
-        Log("lobby: match #%lld started, joining %ls as team %d", seq, addr.c_str(), gMyTeamInMatch);
-        net::JoinHost(addr + NameOption());
+        Log("lobby: match #%lld started, joining %ls as %s %d", seq, addr.c_str(), gMyTeamInMatch < 0 ? "spectator" : "team", gMyTeamInMatch);
+        net::JoinHost(addr + NameOption() + L"?BETeam=" + std::to_wstring(gMyTeamInMatch));
     }
     if (gB->Get(gId, "state") == "lobby" && gInMatch && inMenu) gInMatch = false;
 }
@@ -831,11 +1026,12 @@ void Install() {
 
 // Developer shortcuts from the dev command channel.
 void LobbyDevCommand(const char* cmd) {
-    unsigned long long id = 0;
+    unsigned long long id = 0; int t = 0;
     if (!strcmp(cmd, "create")) lobby::CreateAsHost();
     else if (!strcmp(cmd, "leave")) lobby::Leave();
     else if (sscanf(cmd, "join %llu", &id) == 1) lobby::JoinById(id);
     else if (!strcmp(cmd, "start")) { if (uo::UObject* m = Mgr()) hkCustomStart(m); }
+    else if (sscanf(cmd, "team %d", &t) == 1) RequestTeam(t);
     else if (!strcmp(cmd, "status")) Log("lobby: %ls", lobby::StatusLine().c_str());
     else if (!strcmp(cmd, "tomenu")) net::Travel(L"/Game/Levels/FrontEnd/Map_FrontEnd_3D");
 }

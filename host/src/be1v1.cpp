@@ -117,6 +117,7 @@ void InstallSys();   // sys.cpp
 void InstallGame();  // game.cpp
 void LobbyDevCommand(const char* cmd);   // lobby.cpp
 void SysDevCommand(const char* cmd);     // sys.cpp
+void GameTeamsTick();                    // game.cpp
 
 static char gDllDir[MAX_PATH];
 static bool gUoReady;
@@ -151,11 +152,28 @@ void GameTick(float dt) {
     if (!gUoReady) { gUoReady = uo::Init(); if (!gUoReady) return; }
     acc += dt;
     if (acc > 0.5f) { acc = 0; DevPoll(); }
-    ui::Tick(dt);
-    lobby::Tick(dt);
-    settings::Tick();
-    rules::Tick();
-    update::Tick(dt);
+    uo::IndexStep(12000);
+    // Each part is timed; slow frames are logged (rate-limited) so performance problems show up in user logs.
+    static LARGE_INTEGER freq; if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    LARGE_INTEGER t[8]; int n = 0;
+    QueryPerformanceCounter(&t[n++]);
+    ui::Tick(dt); ui::FastTick();      QueryPerformanceCounter(&t[n++]);
+    lobby::Tick(dt);                    QueryPerformanceCounter(&t[n++]);
+    settings::Tick();                   QueryPerformanceCounter(&t[n++]);
+    rules::Tick();                      QueryPerformanceCounter(&t[n++]);
+    GameTeamsTick();                    QueryPerformanceCounter(&t[n++]);
+    update::Tick(dt);                   QueryPerformanceCounter(&t[n++]);
+    double total = (t[n - 1].QuadPart - t[0].QuadPart) * 1000.0 / freq.QuadPart;
+    static DWORD lastSlow; static int slowCount;
+    if (total > 12.0) {
+        slowCount++;
+        if (GetTickCount() - lastSlow > 5000) {
+            lastSlow = GetTickCount();
+            auto ms = [&](int i) { return (t[i + 1].QuadPart - t[i].QuadPart) * 1000.0 / freq.QuadPart; };
+            Log("perf: slow tick %.1f ms (ui %.1f lobby %.1f settings %.1f rules %.1f teams %.1f update %.1f), %d slow ticks",
+                total, ms(0), ms(1), ms(2), ms(3), ms(4), ms(5), slowCount);
+        }
+    }
 }
 
 // Runs inside DllMain: the launcher loads us before the game's entry point, so everything must be in place now.
@@ -193,6 +211,7 @@ static void Init() {
     InstallRepl();
     InstallGame();
     lobby::Install();
+    rules::Install();
     ui::Install();
     update::Install();
     MH_EnableHook(MH_ALL_HOOKS);

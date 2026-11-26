@@ -159,6 +159,12 @@ void Restart() {
     // BE1v1.exe --relaunch <pid>: refreshes Launch_Game.exe, waits for us to exit, then starts the game again.
     std::wstring exe = ModDir() + L"BE1v1.exe";
     std::wstring cmd = L"\"" + exe + L"\" --relaunch " + std::to_wstring(GetCurrentProcessId());
+    // Developer test runs (-be1v1direct) restart through Launch_Game.exe with the same arguments instead of Steam.
+    std::wstring self = GetCommandLineW();
+    if (self.find(L"-be1v1direct") != std::wstring::npos) {
+        size_t a = self[0] == L'"' ? self.find(L'"', 1) + 1 : self.find(L' ');
+        cmd += L" --direct" + (a == std::wstring::npos ? std::wstring() : self.substr(a));
+    }
     STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
     if (CreateProcessW(exe.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, ModDir().c_str(), &si, &pi)) {
         CloseHandle(pi.hThread); CloseHandle(pi.hProcess);

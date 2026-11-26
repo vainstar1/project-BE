@@ -3,8 +3,9 @@
 #include <cstdint>
 #include <string>
 #include <functional>
+#include <vector>
 
-#define BE1V1_VERSION "2.0.0"
+#define BE1V1_VERSION "2.1.0"
 #define BE1V1_PROTOCOL "2"     // lobbies only list/accept peers with the same protocol
 
 namespace net {
@@ -37,6 +38,10 @@ void Install();
 std::wstring LobbyCode();       // shareable join code for the current lobby
 void SetTeamSize(int perTeam);   // host: maximum players per team
 void OpenInvite();              // Steam invite dialog for the current lobby
+void OpenBrowser();             // CUSTOM GAME: list of joinable games + create
+bool OnBackPressed();           // lobby screen back: true = handled (stay in lobby)
+bool OnSlotPressed(void* slot); // team slot clicked
+bool OnListButton(void* btn);   // a PromptListButton was pressed (lobby screen LEAVE)
 }
 
 namespace ui {
@@ -45,6 +50,12 @@ void Tick(float dt);
 void ShowMessage(const std::wstring& title, const std::wstring& body);   // native confirmation popup with OK
 void ShowBusy(bool on);
 void Ask(const std::wstring& body, const std::wstring& yes, const std::wstring& no, std::function<void(bool yes)> cb);
+enum { kYes = -2, kNo = -1 };
+// Message, a column of buttons, and two bottom buttons (empty label hides "yes"). cb gets the row index, kYes or kNo.
+void List(const std::wstring& body, const std::vector<std::wstring>& rows, const std::wstring& yes, const std::wstring& no, std::function<void(int)> cb);
+bool PromptOpen();
+void FastTick();
+std::wstring TextToString(const void* ftext);
 void DevCommand(const char* cmd);
 bool MainMenuReady();          // main menu up, title screen gone, no prompt showing
 }
@@ -59,7 +70,10 @@ std::wstring LatestVersion();
 }
 
 namespace rules {
-struct Values { int score = 3, objectives = 0, capture = 0, teamSize = 4; };
+struct Values { int score = 3, objectives = 0, capture = 0, teamSize = 4; uint32_t mods = 0; };
+int NumMods();
+const wchar_t* ModName(int i);
+void Install();
 Values Current();
 void Set(const Values& v);
 std::string Encode();
