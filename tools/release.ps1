@@ -8,11 +8,14 @@ $root = Split-Path $PSScriptRoot -Parent
 $repo = 'vainstar1/project-BE'
 $ver = (Select-String -Path "$root\host\src\mod.h" -Pattern '#define BE1V1_VERSION "([^"]+)"').Matches[0].Groups[1].Value
 $tag = "v$ver"
-if (-not $NoBuild) { & bash "$root/tools/package.sh" | Select-Object -Last 3 }
+# Git for Windows' bash runs the build and reads the credential (its login shell has the tools on PATH).
+$bash = 'C:\Program Files\Git\bin\bash.exe'
+$unixRoot = (& $bash -lc "cygpath -u '$root'").Trim()
+if (-not $NoBuild) { & $bash -lc "cd '$unixRoot' && sh tools/package.sh" | Select-Object -Last 3 }
 $zip = "$root\dist\BE1v1.zip"
 if (-not (Test-Path $zip)) { throw "missing $zip" }
 
-$cred = "protocol=https`nhost=github.com`n`n" | git credential fill
+$cred = & $bash -lc "printf 'protocol=https\nhost=github.com\n\n' | git credential fill"
 $token = ($cred | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
 if (-not $token) { throw 'no GitHub credential found' }
 $h = @{ Authorization = "token $token"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'BE1v1-release' }

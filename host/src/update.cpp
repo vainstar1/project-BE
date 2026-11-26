@@ -134,7 +134,13 @@ DWORD WINAPI ApplyThread(void*) {
     wchar_t sys[MAX_PATH]; GetSystemDirectoryW(sys, MAX_PATH);
     std::wstring out = dir + L"x\\";
     CreateDirectoryW(out.c_str(), nullptr);
-    if (!RunWait(L"\"" + std::wstring(sys) + L"\\tar.exe\" -xf \"" + zipPath + L"\" -C \"" + out + L"\"", 60000)) { Log("update: extract failed"); InterlockedExchange(&gApplyResult, 2); return 0; }
+    // (No trailing backslash before a closing quote: it would escape the quote.)
+    std::wstring outArg = out.substr(0, out.size() - 1);
+    bool extracted = RunWait(L"\"" + std::wstring(sys) + L"\\tar.exe\" -xf \"" + zipPath + L"\" -C \"" + outArg + L"\"", 60000);
+    if (!extracted)   // older Windows without tar.exe
+        extracted = RunWait(L"powershell.exe -NoProfile -NonInteractive -Command \"Expand-Archive -Force -LiteralPath '" + zipPath +
+                            L"' -DestinationPath '" + outArg + L"'\"", 120000);
+    if (!extracted) { Log("update: extract failed"); InterlockedExchange(&gApplyResult, 2); return 0; }
     // The zip holds BE1v1\BE1v1.exe and BE1v1\be1v1.dll (or the files at its root).
     std::wstring src = out + L"BE1v1\\";
     if (GetFileAttributesW((src + L"be1v1.dll").c_str()) == INVALID_FILE_ATTRIBUTES) src = out;

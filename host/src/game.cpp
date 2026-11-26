@@ -101,7 +101,7 @@ int TeamFromConnection(uint8_t* conn) {
     }
     return -2;
 }
-int gPSTeamOff = -1, gCtrlPSOff = -1;
+int gCtrlPSOff = -1;
 void SyncTeamsOnHost() {
     if (!lobby::Active() || !net::IsHosting()) return;
     static DWORD last;

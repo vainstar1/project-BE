@@ -7,5 +7,10 @@ sh launcher/build.sh
 rm -rf dist/BE1v1 dist/BE1v1.zip
 mkdir -p dist/BE1v1
 cp build/BE1v1.exe build/be1v1.dll launcher/README.txt dist/BE1v1/
-cd dist && powershell -NoProfile -Command "Compress-Archive -Path BE1v1 -DestinationPath BE1v1.zip -Force"
-ls -la BE1v1 BE1v1.zip
+cd dist
+python -c "
+import zipfile
+z = zipfile.ZipFile('BE1v1.zip', 'w', zipfile.ZIP_DEFLATED)
+for f in ('BE1v1.exe', 'be1v1.dll', 'README.txt'): z.write('BE1v1/' + f, 'BE1v1/' + f)
+z.close()
+print(zipfile.ZipFile('BE1v1.zip').namelist())"
