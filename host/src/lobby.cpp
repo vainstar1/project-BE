@@ -42,7 +42,9 @@ constexpr size_t CGM_MemberList = 0x80, CGM_Teams = 0xe0, CGM_Spectators = 0x110
                  CGM_CurrentMap = 0x138, CGM_GameName = 0x160, CGM_Privacy = 0x170, CGM_MaxRoster = 0x174,
                  CGM_TeamsLocked = 0x178, CGM_IsLeader = 0x179;
 // MBFECustomGameMenu fields
-constexpr size_t Menu_Manager = 0x4a8, Menu_LocalTeam = 0x4c0, Menu_LocalTeamSet = 0x4c4;
+constexpr size_t Menu_Manager = 0x4a8, Menu_LocalTeam = 0x4c0, Menu_LocalTeamSet = 0x4c4, Menu_NumQueueSlots = 0x458;
+// MBFECustomGameTeamSlotButton fields
+constexpr size_t Slot_TeamId = 0x480, Slot_Occupied = 0x4a8, Slot_IsLocal = 0x4aa, Slot_NetId = 0x4b0;
 constexpr size_t MapInfoSize = 0x90, MI_Name = 0x0, MI_Text = 0x8, MI_Mode = 0x20, MI_Path = 0x28;
 
 struct Member { void* NetIdObj; void* NetIdRef; FString NetId; FString Nickname; int32_t TeamId; bool bLeader; bool bLocal; uint8_t pad[2]; };
@@ -101,13 +103,19 @@ struct SteamBackend : Backend {
     std::wstring HostAddress() override { return L"steam." + std::to_wstring(Me()); }
     void Browse(std::function<void(std::vector<uint64_t>)> done) override {
         // Friends in this game who sit in a lobby (friends-only lobbies are not listed publicly).
+        // Several friends in one lobby report the same lobby id: list each lobby once.
         auto friends = std::make_shared<std::vector<uint64_t>>();
-        for (auto& f : steam::Friends()) if (f.inGame && f.lobby) { friends->push_back(f.lobby); steam::RequestLobbyData(f.lobby); }
+        for (auto& f : steam::Friends())
+            if (f.inGame && f.lobby && std::find(friends->begin(), friends->end(), f.lobby) == friends->end()) {
+                friends->push_back(f.lobby);
+                steam::RequestLobbyData(f.lobby);
+            }
         steam::RequestLobbyList({ { "be1v1", BE1V1_PROTOCOL } }, [friends, done](std::vector<uint64_t> pub) {
             std::vector<uint64_t> all = *friends;
             for (uint64_t l : pub) if (std::find(all.begin(), all.end(), l) == all.end()) all.push_back(l);
-            // Friends' lobby data arrives asynchronously; give it a moment.
-            gBrowseWait = GetTickCount() + 1200;
+            done(all);
+            // Friends' lobby data arrives asynchronously: report again once it had a moment.
+            gBrowseWait = GetTickCount() + 1500;
             gBrowseDone = [all, done]() { done(all); };
         });
     }
@@ -176,7 +184,7 @@ struct DevBackend : Backend {
         uint64_t n = ((uint64_t)now.dwHighDateTime << 32) | now.dwLowDateTime;
         do {
             uint64_t t = ((uint64_t)fd.ftLastWriteTime.dwHighDateTime << 32) | fd.ftLastWriteTime.dwLowDateTime;
-            if (n - t < 50000000ull) r.push_back(_wcstoui64(fd.cFileName + 2, nullptr, 10));   // seen in the last 5 s
+            if (n - t < 300000000ull) r.push_back(_wcstoui64(fd.cFileName + 2, nullptr, 10));   // seen in the last 30 s (loading a map stalls the game thread)
         } while (FindNextFileW(h, &fd));
         FindClose(h);
         std::sort(r.begin(), r.end());
@@ -260,6 +268,12 @@ uint8_t* RowFor(int idx) {
 std::wstring MapName(int idx) {
     uint8_t* row = RowFor(idx);
     return row ? ui::TextToString(row + MI_Text) : L"";
+}
+std::wstring MapPath(int idx);
+std::wstring ModeName(int idx) {
+    if (idx == kDojoIdx) return L"Training";
+    if (idx == kPlaygroundIdx) return L"Playground";
+    return wcsstr(MapPath(idx).c_str(), L"GameMode_Seeds") ? L"Power Collection" : L"Objective Control";
 }
 std::wstring MapPath(int idx) { return idx >= 0 && idx < kNumMaps ? kMaps[idx] : kMaps[0]; }
 bool IsTrainingMap(int idx) { return idx == kDojoIdx || idx == kPlaygroundIdx; }
@@ -380,6 +394,9 @@ void FixSlotVisibility() {
 void RefreshUI() {
     if (!net::MenuSettled()) return;
     uo::UObject* menu = Menu();
+    // The screen was built for the official queue: "team max - NumQueueSlots" real team slots and 4 queue slots per
+    // team, which shows no empty places at all. Without queue slots every place is a real (clickable) team slot.
+    if (menu) F<int32_t>(menu, Menu_NumQueueSlots) = 0;
     if (menu) { uo::Call(menu, L"NativeOnSessionUpdated").run(); uo::Call(menu, L"RefreshTeamSlotButtons").run(); }
     gSlots = uo::FindAllTransient(uo::FindClass(L"MBFECustomGameTeamSlotButton"));
     gSlotFixUntil = GetTickCount() + 3000;
@@ -395,13 +412,15 @@ std::string Csv(const int32_t* d, int n) { std::string s; for (int i = 0; i < n;
 
 int TeamMax(uo::UObject* m, int t) { return t < 0 ? F<Team>(m, CGM_Spectators).Max : (&F<Team>(m, CGM_Teams))[t].Max; }
 
-int AutoTeam(uo::UObject* m) {
-    int c[2] = { 0, 0 };
-    for (auto& kv : gTeam) if (kv.second == 0 || kv.second == 1) c[kv.second]++;
-    (void)m;
-    return c[0] <= c[1] ? 0 : 1;
-}
 int CountTeam(int t) { int n = 0; for (auto& kv : gTeam) if (kv.second == t) n++; return n; }
+// New members go to the smaller team; when both teams are full they watch.
+int AutoTeam(uo::UObject* m) {
+    int a = CountTeam(0), b = CountTeam(1);
+    bool roomA = a < TeamMax(m, 0), roomB = b < TeamMax(m, 1);
+    if (roomA && (a <= b || !roomB)) return 0;
+    if (roomB) return 1;
+    return -1;
+}
 
 // ---- host side ----------------------------------------------------------------------------------------------
 void HostSync(uo::UObject* m) {
@@ -409,18 +428,24 @@ void HostSync(uo::UObject* m) {
     std::set<uint64_t> present(members.begin(), members.end());
     for (auto it = gTeam.begin(); it != gTeam.end();) it = present.count(it->first) ? std::next(it) : gTeam.erase(it);
     for (uint64_t id : members) {
-        if (!gTeam.count(id)) { int t = AutoTeam(m); gTeam[id] = t; }
-        // Team-change requests from members: "want" = "<team>:<counter>"
+        // Team-change requests from members: "want" = "<team>:<counter>". A member who (re)appears gets the team
+        // they asked for last, if it has room; otherwise the smaller team, or spectating when both are full.
         std::string want = gB->GetMember(gId, id, "want");
         size_t c = want.find(':');
+        bool isNew = !gTeam.count(id);
+        if (isNew) gTeam[id] = -2;   // not counted while we pick
         if (c != std::string::npos) {
             long long n = ToI(want.substr(c + 1));
-            if (n > gReqSeen[id]) {
-                gReqSeen[id] = n;
+            if (n > gReqSeen[id] || isNew) {
+                gReqSeen[id] = std::max(n, gReqSeen[id]);
                 int t = (int)ToI(want.substr(0, c));
-                if (!F<bool>(m, CGM_TeamsLocked) && t >= -1 && t <= 1 && gTeam[id] != t && CountTeam(t) < TeamMax(m, t)) gTeam[id] = t;
+                if ((!F<bool>(m, CGM_TeamsLocked) || isNew) && t >= -1 && t <= 1 && gTeam[id] != t && CountTeam(t) < TeamMax(m, t)) {
+                    gTeam[id] = t;
+                    Log("lobby: %llu -> team %d (asked)", (unsigned long long)id, t);
+                }
             }
         }
+        if (gTeam[id] == -2) gTeam[id] = AutoTeam(m);
     }
     std::vector<std::pair<uint64_t, int>> list;
     for (uint64_t id : members) list.push_back({ id, gTeam[id] });
@@ -573,8 +598,7 @@ std::wstring NameOption() {
     return L"?Name=" + clean;
 }
 
-// The lobby screen has two hidden debug buttons; they become LEAVE in the host's and the members' button column,
-// styled like INVITE.
+// ---- lobby screen decoration ---------------------------------------------------------------------------------
 uo::UObject* ScreenWidget(uo::UObject* scr, const wchar_t* cls, const wchar_t* name) {
     FName want = uo::MakeName(name);
     for (uo::UObject* w : uo::FindAll(uo::FindClass(cls))) {
@@ -583,44 +607,199 @@ uo::UObject* ScreenWidget(uo::UObject* scr, const wchar_t* cls, const wchar_t* n
     }
     return nullptr;
 }
+// A named widget inside a user widget: its Blueprint variable, else a search of its widget tree (cached).
+uo::UObject* Named(uo::UObject* userWidget, const wchar_t* name) {
+    if (!userWidget) return nullptr;
+    int off = uo::PropOffset(uo::ClassOf(userWidget), name);
+    if (off >= 0) return F<uo::UObject*>(userWidget, off);
+    static std::map<std::pair<uo::UObject*, std::wstring>, uo::UObject*> cache;
+    auto key = std::make_pair(userWidget, std::wstring(name));
+    auto it = cache.find(key);
+    if (it != cache.end() && uo::IsLive(it->second) && uo::OuterOf(uo::OuterOf(it->second)) == userWidget) return it->second;
+    if (cache.size() > 2000) cache.clear();
+    FName want = uo::MakeName(name);
+    for (uo::UObject* w : uo::FindAll(uo::FindClass(L"Widget")))
+        if (uo::NameIs(w, want) && uo::OuterOf(w) && uo::OuterOf(uo::OuterOf(w)) == userWidget) return cache[key] = w;
+    return nullptr;
+}
+uo::UObject* SlotOf(uo::UObject* w) {
+    static int off = -2;
+    if (off == -2) off = uo::PropOffset(uo::FindClass(L"Widget"), L"Slot");
+    return w && off >= 0 ? F<uo::UObject*>(w, off) : nullptr;
+}
+// Layout of a panel slot (padding, size, alignment), kept by value so it survives removing the widget.
+struct SlotLayout {
+    uint8_t padding[16] = {}, size[8] = {}, ha = 0, va = 0;
+    bool hasPad = false, hasSize = false, hasHa = false, hasVa = false;
+    void Read(uo::UObject* slot) {
+        if (!slot) return;
+        uo::UObject* sc = uo::ClassOf(slot);
+        int o;
+        if ((o = uo::PropOffset(sc, L"Padding")) >= 0) { memcpy(padding, slot + o, 16); hasPad = true; }
+        if ((o = uo::PropOffset(sc, L"Size")) >= 0) { memcpy(size, slot + o, 8); hasSize = true; }
+        if ((o = uo::PropOffset(sc, L"HorizontalAlignment")) >= 0) { ha = slot[o]; hasHa = true; }
+        if ((o = uo::PropOffset(sc, L"VerticalAlignment")) >= 0) { va = slot[o]; hasVa = true; }
+    }
+    void Apply(uo::UObject* slot) const {
+        if (!slot) return;
+        auto raw = [&](const wchar_t* fn, const wchar_t* arg, const void* v, size_t n) {
+            uo::Call c(slot, fn); int a = c.off(arg);
+            if (c.ok() && a >= 0) { memcpy(c.buf.data() + a, v, n); c.run(); }
+        };
+        if (hasPad) raw(L"SetPadding", L"InPadding", padding, 16);
+        if (hasSize) raw(L"SetSize", L"InSize", size, 8);
+        if (hasHa) raw(L"SetHorizontalAlignment", L"InHorizontalAlignment", &ha, 1);
+        if (hasVa) raw(L"SetVerticalAlignment", L"InVerticalAlignment", &va, 1);
+    }
+};
+uo::UObject* AddTo(uo::UObject* panel, uo::UObject* w, const SlotLayout* layout) {
+    uo::Call add(panel, L"AddChild");
+    uo::UObject* slot = add.set<uo::UObject*>(L"Content", w).run().get<uo::UObject*>(L"ReturnValue");
+    if (layout) layout->Apply(slot);
+    return slot;
+}
+// A new side-menu button styled exactly like `like` (the game's PromptListButtonTemplate, as INVITE).
+uo::UObject* MakeMenuButton(uo::UObject* like, const wchar_t* text) {
+    uo::UObject* lib = uo::FindFirst(uo::FindClass(L"WidgetBlueprintLibrary"), true);
+    uo::UObject* cls = uo::ClassOf(like);
+    if (!lib || !cls) return nullptr;
+    uo::Call c(lib, L"Create");
+    c.set<uo::UObject*>(L"WorldContextObject", (uo::UObject*)net::World()).set<uo::UObject*>(L"WidgetType", cls).set<uo::UObject*>(L"OwningPlayer", nullptr).run();
+    uo::UObject* w = c.get<uo::UObject*>(L"ReturnValue");
+    if (!w) return nullptr;
+    // Plain style fields (colours, sizes, textures, alignment) as designed for INVITE; read when it is constructed.
+    const std::pair<size_t, size_t> ranges[] = { { 0x558, 0x6c8 }, { 0x6d8, 0x6dc }, { 0x75c, 0x764 }, { 0x76c, 0x77c } };
+    for (auto& r : ranges) memcpy(w + r.first, like + r.first, r.second - r.first);
+    uo::MakeText((uo::FText*)(w + 0x4e0), text);
+    return w;
+}
+uo::UObject* gLeaveBtn[2];          // LEAVE in the host's and the members' button column
+uo::UObject* gJoinBtn;              // members: JOIN MATCH while a match runs without them
+uo::UObject* gInfoText;             // the line under the game name
+bool Animating(uo::UObject* w) {
+    uo::Call c(w, L"IsAnyAnimationPlaying");
+    return w && c.ok() && c.run().get<bool>(L"ReturnValue");
+}
 void DecorateScreen() {
     uo::UObject* scr = Screen();
-    if (!scr || scr == gDecorated) return;
+    if (!scr) return;
+    // Real team slots right away (the field only matters when slots are rebuilt).
+    uo::UObject* menu = Menu();
+    if (menu && F<int32_t>(menu, Menu_NumQueueSlots) != 0) {
+        F<int32_t>(menu, Menu_NumQueueSlots) = 0;
+        uo::Call(menu, L"RefreshTeamSlotButtons").run();
+        uo::Call(menu, L"NativeOnSessionUpdated").run();
+    }
+    if (scr == gDecorated) return;
+    // Moving buttons while the screen slides in freezes its intro animation half-way (the side columns then sit
+    // off their places): wait until it has finished.
+    if (Animating(scr) || (menu && Animating(menu))) return;
     uo::UObject* invite = ScreenWidget(scr, L"PromptListButtonTemplate_C", L"Button_Invite");
+    uo::UObject* start = ScreenWidget(scr, L"PromptListButtonTemplate_C", L"Button_Start");
     uo::UObject* hostView = ScreenWidget(scr, L"VerticalBox", L"HostView");
     uo::UObject* clientView = ScreenWidget(scr, L"VerticalBox", L"ClientView");
-    if (!invite || !hostView || !clientView) return;
+    gInfoText = ScreenWidget(scr, L"TextBlock", L"BasicGameInfo");
+    // Widgets of a screen that was just created show up in searches within a second: try again next tick.
+    if (!invite || !start || !hostView || !clientView || !gInfoText) return;
     gDecorated = scr;
-    int fontOff = uo::PropOffset(uo::FindClass(L"TextBlock"), L"Font");
-    uo::UObject* inviteText = F<uo::UObject*>(invite, 0x4b0);
-    std::pair<const wchar_t*, uo::UObject*> moves[] = { { L"Debug_FetchSessionData", hostView }, { L"Debug_UpdateSessionData", clientView } };
-    for (auto& mv : moves) {
-        uo::UObject* b = ScreenWidget(scr, L"PromptListButtonTemplate_C", mv.first);
-        if (!b) continue;
-        uo::Call(b, L"RemoveFromParent").run();
-        uo::Call add(mv.second, L"AddChild");
-        uo::UObject* slot = add.set<uo::UObject*>(L"Content", b).run().get<uo::UObject*>(L"ReturnValue");
-        uo::UObject* invSlot = F<uo::UObject*>(invite, uo::PropOffset(uo::FindClass(L"Widget"), L"Slot"));
-        if (slot && invSlot) {
-            uo::UObject* sc = uo::ClassOf(invSlot);
-            int ha = uo::PropOffset(sc, L"HorizontalAlignment"), pad = uo::PropOffset(sc, L"Padding");
-            if (ha >= 0) uo::Call(slot, L"SetHorizontalAlignment").set<uint8_t>(L"InHorizontalAlignment", F<uint8_t>(invSlot, ha)).run();
-            if (pad >= 0) { uo::Call c(slot, L"SetPadding"); int o = c.off(L"InPadding"); if (o >= 0) { memcpy(c.buf.data() + o, invSlot + pad, 16); c.run(); } }
-        }
-        F<int32_t>(b, 0x760) = F<int32_t>(invite, 0x760);   // TextSize
-        F<uint8_t>(b, 0x75c) = F<uint8_t>(invite, 0x75c);   // Justification
-        F<uint8_t>(b, 0x75d) = F<uint8_t>(invite, 0x75d);   // TextSlotAlignment
-        uo::UObject* tb = F<uo::UObject*>(b, 0x4b0);        // ButtonText
-        if (tb && inviteText && fontOff >= 0) {
-            uo::Call f(tb, L"SetFont");
-            int a = f.off(L"InFontInfo");
-            if (a >= 0) { memcpy(f.buf.data() + a, inviteText + fontOff, 0x50); f.run(); }
-            uo::Call(tb, L"SetJustification").set<uint8_t>(L"Justification", F<uint8_t>(invite, 0x75c)).run();
-        }
-        if (tb) { uo::FText t; uo::MakeText(&t, L"LEAVE"); uo::Call(tb, L"SetText").set(L"InText", t).run(); }
-        uo::Call(b, L"SetVisibility").set<uint8_t>(L"InVisibility", 0).run();
+    SlotLayout inviteLayout, startLayout;
+    inviteLayout.Read(SlotOf(invite));
+    startLayout.Read(SlotOf(start));
+    // Host: SETTINGS, MAPS, INVITE, LEAVE, then START. Members: the map list, then LEAVE.
+    for (auto& b : gLeaveBtn) if (b && uo::IsLive(b)) uo::Call(b, L"RemoveFromParent").run();
+    if (gJoinBtn && uo::IsLive(gJoinBtn)) uo::Call(gJoinBtn, L"RemoveFromParent").run();
+    gLeaveBtn[0] = MakeMenuButton(invite, L"LEAVE");
+    gLeaveBtn[1] = MakeMenuButton(invite, L"LEAVE");
+    gJoinBtn = MakeMenuButton(invite, L"JOIN MATCH");
+    if (gJoinBtn) { AddTo(clientView, gJoinBtn, &inviteLayout); uo::Call(gJoinBtn, L"SetVisibility").set<uint8_t>(L"InVisibility", 1).run(); }
+    if (gLeaveBtn[0]) {
+        uo::Call(start, L"RemoveFromParent").run();
+        AddTo(hostView, gLeaveBtn[0], &inviteLayout);
+        AddTo(hostView, start, &startLayout);
     }
+    if (gLeaveBtn[1]) AddTo(clientView, gLeaveBtn[1], &inviteLayout);
+    // The LEAVE of earlier versions (moved debug buttons) stays hidden.
+    for (const wchar_t* n : { L"Debug_FetchSessionData", L"Debug_UpdateSessionData" })
+        if (uo::UObject* b = ScreenWidget(scr, L"PromptListButtonTemplate_C", n)) uo::Call(b, L"SetVisibility").set<uint8_t>(L"InVisibility", 1).run();
     Log("lobby: screen decorated");
+}
+
+int LocalTeamInLobby() {
+    uo::UObject* m = Mgr();
+    if (!m) return 0;
+    auto& list = F<TArray<Member>>(m, CGM_MemberList);
+    for (int i = 0; i < list.Num; i++) if (list.Data[i].bLocal) return list.Data[i].TeamId;
+    return 0;
+}
+void SetTextIfDifferent(uo::UObject* tb, const std::wstring& text) {
+    static int textOff = -2;
+    if (textOff == -2) textOff = uo::PropOffset(uo::FindClass(L"TextBlock"), L"Text");
+    if (!tb || textOff < 0) return;
+    if (ui::TextToString(tb + textOff) == text) return;
+    uo::FText t; uo::MakeText(&t, text.c_str());
+    uo::Call(tb, L"SetText").set(L"InText", t).run();
+}
+std::wstring Upper(std::wstring s) { for (auto& c : s) c = towupper(c); return s; }
+// Empty places say what clicking them does ("Join" / "Spectate"); the line under the game name says what will be
+// played. Runs a few times a second while the screen is up (the Blueprint rewrites its texts on every update).
+void LabelScreen() {
+    static bool wasUp, focusDone;
+    uo::UObject* scr = Screen();
+    if (!scr) { wasUp = false; return; }
+    if (!wasUp) { wasUp = true; focusDone = false; }
+    int mine = LocalTeamInLobby();
+    // Members can't rename the game or the teams: no pencils, and keyboard/controller focus starts on their own place
+    // (left/right or LT/RT then switch teams) instead of inside the game name.
+    if (!gHost) {
+        for (uo::UObject* e : uo::FindAllTransient(uo::FindClass(L"FE_EditButton_C"))) {
+            bool inside = false;
+            for (uo::UObject* o = uo::OuterOf(e); o && !inside; o = uo::OuterOf(o)) inside = o == scr;
+            if (!inside) continue;
+            uo::Call v(e, L"GetVisibility");
+            if (v.ok() && v.run().get<uint8_t>(L"ReturnValue") != 1) uo::Call(e, L"SetVisibility").set<uint8_t>(L"InVisibility", 1).run();
+        }
+        // A match is running without us (we came back to the menu, or lost the connection): offer to drop back in.
+        if (gJoinBtn && uo::IsLive(gJoinBtn)) {
+            bool show = gB->Get(gId, "state") == "game" && !gInMatch && !net::Joining();
+            uo::Call v(gJoinBtn, L"GetVisibility");
+            uint8_t want = show ? 0 : 1;
+            if (v.ok() && v.run().get<uint8_t>(L"ReturnValue") != want) uo::Call(gJoinBtn, L"SetVisibility").set<uint8_t>(L"InVisibility", want).run();
+        }
+        if (!focusDone)
+            for (uo::UObject* sl : uo::FindAllTransient(uo::FindClass(L"MBFECustomGameTeamSlotButton"))) {
+                if (!F<bool>(sl, Slot_IsLocal)) continue;
+                uo::Call par(sl, L"GetParent");
+                if (!par.ok() || !par.run().get<uo::UObject*>(L"ReturnValue")) continue;
+                if (uo::UObject* b = Named(sl, L"TheButton")) { uo::Call(b, L"SetKeyboardFocus").run(); focusDone = true; Log("lobby: focus on my place"); }
+                break;
+            }
+    }
+    for (uo::UObject* s : uo::FindAllTransient(uo::FindClass(L"MBFECustomGameTeamSlotButton"))) {
+        if (F<bool>(s, Slot_Occupied)) continue;
+        uo::Call par(s, L"GetParent");
+        if (!par.ok() || !par.run().get<uo::UObject*>(L"ReturnValue")) continue;
+        int team = F<int32_t>(s, Slot_TeamId);
+        bool spec = team < 0;
+        // Your own team's empty places: the host invites friends into them (the game's invite icon), members see "Open".
+        std::wstring label = team == mine ? (gHost ? L"Invite" : L"Open") : spec ? L"+ Spectate" : L"Join";
+        const wchar_t* specNames[] = { L"TextBlock_0", L"TextBlock_4" };
+        const wchar_t* teamNames[] = { L"PlayerName1", L"NameText" };
+        for (const wchar_t* n : spec ? specNames : teamNames) SetTextIfDifferent(Named(s, n), label);
+    }
+    if (gInfoText && uo::IsLive(gInfoText)) {
+        uo::UObject* m = Mgr();
+        if (!m) return;
+        auto& roster = F<TArray<int32_t>>(m, CGM_MapRoster);
+        int idx = roster.Num ? roster.Data[F<int32_t>(m, CGM_CurrentMap) % roster.Num] : 0;
+        int size = (&F<Team>(m, CGM_Teams))[0].Max;
+        const wchar_t* priv[] = { L"Public", L"Friends only", L"Invite only" };
+        int p = F<uint8_t>(m, CGM_Privacy);
+        // Two short lines: a wider line under the title pushes the side columns outward.
+        std::wstring info = MapName(idx) + L" / " + ModeName(idx) + L"\n" + std::to_wstring(size) + L"v" + std::to_wstring(size);
+        if (roster.Num > 1) info += L" / " + std::to_wstring(roster.Num) + L" maps";
+        info += std::wstring(L" / ") + (p >= 0 && p < 3 ? priv[p] : L"");
+        SetTextIfDifferent(gInfoText, Upper(info));
+    }
 }
 
 // ---- hooks ----------------------------------------------------------------------------------------------------
@@ -834,36 +1013,91 @@ void SetTeamSize(int perTeam) {
     HostSync(m);
 }
 
-// CUSTOM GAME on the main menu: friends' and public games, plus CREATE GAME.
+int NextTeamWithRoom(uo::UObject* m, int from);
+int SpectatorPlaces() { uo::UObject* m = Mgr(); return m ? F<Team>(m, CGM_Spectators).Max : 0; }
+void SetSpectatorPlaces(int n) {
+    uo::UObject* m = Mgr();
+    if (!m || !gHost || n < 0 || n > 8) return;
+    F<Team>(m, CGM_Spectators).Max = n;
+    // Spectators beyond the new number go to a team with room (or stay, if there is none).
+    for (auto& kv : gTeam)
+        if (kv.second == -1 && CountTeam(-1) > n) { int t = NextTeamWithRoom(m, -1); if (t != -1) kv.second = t; }
+    Log("lobby: %d spectator places", n);
+    HostSync(m);
+}
+
+// ---- lobby browser (CUSTOM GAMES on the main menu) ---------------------------------------------------------------
+// The list opens at once from a cache that is refreshed in the background while the main menu is up, and its rows
+// update in place when fresh results arrive.
+struct BrowseEntry { uint64_t id; std::wstring label; };
+std::vector<BrowseEntry> gCache;
+DWORD gCacheAt;
+bool gFetching, gFetchedOnce;
+int gBrowserList;                                   // id of the open browser list (ui::List)
+std::vector<uint64_t> gBrowserIds;                  // lobby of each game row, in row order
+bool gBrowserSearchingRow;
+
+std::vector<BrowseEntry> Describe(const std::vector<uint64_t>& ids) {
+    std::vector<BrowseEntry> out;
+    for (uint64_t id : ids) {
+        if (gB->Get(id, "be1v1") != BE1V1_PROTOCOL) continue;
+        std::wstring name = W(gB->Get(id, "name")), map = W(gB->Get(id, "mapname"));
+        long long n = ToI(gB->Get(id, "n")), max = ToI(gB->Get(id, "max"), 8);
+        if (name.empty() || n <= 0) continue;
+        std::wstring row = name;
+        if (!map.empty()) row += L"   -   " + map;
+        row += L"   -   " + std::to_wstring(n) + L"/" + std::to_wstring(max);
+        if (gB->Get(id, "state") == "game") row += L"   -   IN MATCH";
+        out.push_back({ id, row });
+    }
+    return out;
+}
+std::vector<std::wstring> BrowserRows() {
+    std::vector<std::wstring> rows = { L"CREATE GAME" };
+    gBrowserIds.clear();
+    for (auto& e : gCache) { rows.push_back(e.label); gBrowserIds.push_back(e.id); }
+    gBrowserSearchingRow = gCache.empty() && (gFetching || !gFetchedOnce);
+    if (gBrowserSearchingRow) rows.push_back(L"SEARCHING FOR GAMES...");
+    else if (gCache.empty()) rows.push_back(L"NO GAMES FOUND");
+    rows.push_back(L"REFRESH");
+    rows.push_back(L"OFFICIAL CUSTOM QUEUE");
+    return rows;
+}
+void Fetch() {
+    if (gFetching || !gB || !gB->Ready()) return;
+    gFetching = true;
+    gB->Browse([](std::vector<uint64_t> ids) {
+        gFetching = false; gFetchedOnce = true;
+        gCache = Describe(ids);
+        gCacheAt = GetTickCount();
+        if (gBrowserList && ui::ListOpen(gBrowserList)) ui::UpdateList(gBrowserList, BrowserRows());
+    });
+}
+
 void OpenBrowser() {
     if (!gB) return;
     if (!gB->Ready()) { ui::ShowMessage(L"", L"Steam isn't available. Make sure Steam is running."); return; }
-    ui::ShowBusy(true);
-    gB->Browse([](std::vector<uint64_t> ids) {
-        ui::ShowBusy(false);
-        std::vector<std::wstring> rows = { L"CREATE GAME" };
-        std::vector<uint64_t> ok;
-        for (uint64_t id : ids) {
-            if (gB->Get(id, "be1v1") != BE1V1_PROTOCOL) continue;
-            std::wstring name = W(gB->Get(id, "name")), map = W(gB->Get(id, "mapname"));
-            long long n = ToI(gB->Get(id, "n")), max = ToI(gB->Get(id, "max"), 8);
-            if (name.empty()) continue;
-            std::wstring row = name;
-            if (!map.empty()) row += L"   " + map;
-            row += L"   " + std::to_wstring(n) + L"/" + std::to_wstring(max);
-            if (gB->Get(id, "state") == "game") row += L"   IN MATCH";
-            rows.push_back(row);
-            ok.push_back(id);
-        }
-        Log("lobby: browser shows %d game(s)", (int)ok.size());
-        rows.push_back(L"REFRESH");
-        int refresh = (int)rows.size() - 1;
-        ui::List(L"", rows, L"", L"", [ok, refresh](int c) {
-            if (c == 0) CreateAsHost();
-            else if (c == refresh) OpenBrowser();
-            else if (c > 0 && c - 1 < (int)ok.size()) JoinById(ok[c - 1]);
-        });
+    if (gBrowserList && ui::ListOpen(gBrowserList)) return;   // already showing (double click)
+    Fetch();
+    Log("lobby: browser opens with %d cached game(s)", (int)gCache.size());
+    gBrowserList = ui::List(L"", BrowserRows(), L"", L"", [](int c) {
+        gBrowserList = 0;
+        int games = (int)gBrowserIds.size();
+        int extra = 1 + games + ((gBrowserSearchingRow || games == 0) ? 1 : 0);   // index of REFRESH
+        if (c == 0) CreateAsHost();
+        else if (c >= 1 && c <= games) JoinById(gBrowserIds[c - 1]);
+        else if (c == extra || (c == extra - 1 && games == 0)) { gCacheAt = 0; OpenBrowser(); }
+        else if (c == extra + 1) ui::OpenOfficialCustomQueue();
     });
+}
+// Keeps the browser cache fresh while the player is on the main menu (cheap: one Steam lobby query).
+void BrowserTick() {
+    if (gSt != St::Idle || gFetching) return;
+    DWORD now = GetTickCount();
+    bool open = gBrowserList && ui::ListOpen(gBrowserList);
+    if (now - gCacheAt < (open ? 6000u : 20000u)) return;
+    if (!open && !ui::MainMenuReady()) return;
+    Fetch();
 }
 
 // Lobby screen BACK: keep the lobby and return to the main menu (LEAVE is the way out).
@@ -876,12 +1110,15 @@ bool OnBackPressed() {
     return true;
 }
 
-// The lobby screen's hidden debug button becomes LEAVE.
+// Our LEAVE buttons (and the moved debug buttons of earlier versions).
 bool OnListButton(void* btn) {
     uo::UObject* b = (uo::UObject*)btn;
     std::wstring bn = uo::Name(b);
     Log("lobby: list button %ls", bn.c_str());
-    if (gSt != St::Lobby || (bn != L"Debug_FetchSessionData" && bn != L"Debug_UpdateSessionData")) return false;
+    if (gSt == St::Lobby && gJoinBtn && b == gJoinBtn) { Log("lobby: join the running match"); gSeenSeq = -1; return true; }
+    bool leave = (gLeaveBtn[0] && b == gLeaveBtn[0]) || (gLeaveBtn[1] && b == gLeaveBtn[1]) ||
+                 bn == L"Debug_FetchSessionData" || bn == L"Debug_UpdateSessionData";
+    if (gSt != St::Lobby || !leave) return false;
     uo::UObject* scr = Screen();
     if (!scr) return false;
     gLeaving = true;
@@ -890,21 +1127,41 @@ bool OnListButton(void* btn) {
     return true;
 }
 
-// Team slot clicked (mouse): your own slot or an empty slot moves you; the host's click on someone moves them.
+// A team or spectator place was clicked (mouse, Enter, controller A): an empty place moves you there, your own
+// place moves you to the other team, and the host's click on someone else moves that player.
+int NextTeamWithRoom(uo::UObject* m, int from) {
+    for (int t : { from == 0 ? 1 : 0, from == 0 ? 0 : 1 }) if (t != from && CountTeam(t) < TeamMax(m, t)) return t;
+    return from;
+}
+void OpenInvite();
 bool OnSlotPressed(void* slotPtr) {
     if (gSt != St::Lobby) return false;
     uo::UObject* slot = (uo::UObject*)slotPtr;
-    int team = F<int32_t>(slot, 0x480);
-    bool occupied = F<bool>(slot, 0x4a8), local = F<bool>(slot, 0x4aa);
+    // One click can arrive as both "Pressed" and "OnPressed_Event": act once.
+    static uo::UObject* lastSlot; static DWORD lastAt;
+    DWORD now = GetTickCount();
+    if (slot == lastSlot && now - lastAt < 300) return true;
+    lastSlot = slot; lastAt = now;
+    int team = F<int32_t>(slot, Slot_TeamId);
+    bool occupied = F<bool>(slot, Slot_Occupied), local = F<bool>(slot, Slot_IsLocal);
     Log("lobby: slot pressed team=%d occupied=%d local=%d", team, occupied, local);
     uo::UObject* m = Mgr();
     if (!m) return true;
-    if (!occupied) { if (team >= -1 && team <= 1) RequestTeam(team); return true; }
-    uint64_t id = _wcstoui64(F<FString>(slot, 0x4b0).c_str(), nullptr, 10);
-    if (local || id == gB->Me()) { int cur = gHost ? gTeam[gB->Me()] : team; RequestTeam(cur == 0 ? 1 : 0); return true; }
+    if (!occupied) {
+        if (team == LocalTeamInLobby()) { if (gHost) OpenInvite(); }
+        else if (team >= -1 && team <= 1) RequestTeam(team);
+        return true;
+    }
+    uint64_t id = _wcstoui64(F<FString>(slot, Slot_NetId).c_str(), nullptr, 10);
+    if (local || id == gB->Me()) {
+        int cur = LocalTeamInLobby();
+        int to = cur < 0 ? NextTeamWithRoom(m, -1) : (cur == 0 ? 1 : 0);
+        if (to != cur) RequestTeam(to);
+        return true;
+    }
     if (gHost && id && gTeam.count(id)) {
-        int to = gTeam[id] == 0 ? 1 : 0;
-        if (CountTeam(to) < TeamMax(m, to)) { gTeam[id] = to; Log("lobby: host moved %llu to team %d", (unsigned long long)id, to); HostSync(m); }
+        int to = NextTeamWithRoom(m, gTeam[id]);
+        if (to != gTeam[id]) { gTeam[id] = to; Log("lobby: host moved %llu to team %d", (unsigned long long)id, to); HostSync(m); }
     }
     return true;
 }
@@ -935,6 +1192,7 @@ void Tick(float dt) {
     gLastSync = now;
     gB->Tick();
     if (gBrowseDone && now > gBrowseWait) { auto f = gBrowseDone; gBrowseDone = nullptr; f(); }
+    BrowserTick();
     if (!gPendingJoinFromCmdline.empty()) {
         gPendingJoin = _wcstoui64(gPendingJoinFromCmdline.c_str(), nullptr, 10);
         gPendingJoinFromCmdline.clear();
@@ -948,6 +1206,7 @@ void Tick(float dt) {
     if (gWantScreen && Screen()) gWantScreen = false;
     if (gWantScreen && menuReady) { gWantScreen = false; ShowLobbyScreen(); }
     DecorateScreen();
+    if (net::MenuSettled()) LabelScreen();
     // Ownership can move (Steam picks a new owner when the host leaves): the lobby carries on with the new owner.
     // Members who were playing on the old host's server go back to the menu.
     uint64_t owner = gB->Owner(gId);
@@ -1034,4 +1293,7 @@ void LobbyDevCommand(const char* cmd) {
     else if (sscanf(cmd, "team %d", &t) == 1) RequestTeam(t);
     else if (!strcmp(cmd, "status")) Log("lobby: %ls", lobby::StatusLine().c_str());
     else if (!strcmp(cmd, "tomenu")) net::Travel(L"/Game/Levels/FrontEnd/Map_FrontEnd_3D");
+    else if (!strcmp(cmd, "rejoin")) gSeenSeq = -1;
+    else if (!strcmp(cmd, "leavebtn")) lobby::OnListButton(gLeaveBtn[gHost ? 0 : 1]);
+    else if (!strncmp(cmd, "rules ", 6)) rules::Set(rules::Decode(cmd + 6));
 }

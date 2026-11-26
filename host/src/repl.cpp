@@ -6,6 +6,8 @@
 #include "ue.h"
 
 
+void GameBeforeReplication(void* nd);   // game.cpp
+
 namespace {
 constexpr uintptr_t A_CallPreReplication = 0x142041450;   // void AActor::CallPreReplication(UNetDriver*)
 constexpr uintptr_t A_ReplicateActorTo = 0x142204330;     // bool (UNetDriver*, AActor*, UNetConnection*, bool) - find/create channel + ReplicateActor
@@ -31,6 +33,7 @@ void ReplicateTick(void* nd) {
         if (c && F<void*>(c, Off::Conn_OwningActor) && F<void*>(c, Off::Conn_PlayerController)) ready.push_back(c);
     }
     if (ready.empty()) return;
+    GameBeforeReplication(nd);
 
     auto preRep = Fn<void(__fastcall*)(void*, void*)>(A_CallPreReplication);
     auto repTo = Fn<bool(__fastcall*)(void*, void*, void*, bool)>(A_ReplicateActorTo);

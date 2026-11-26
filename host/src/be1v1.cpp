@@ -152,11 +152,14 @@ void GameTick(float dt) {
     if (!gUoReady) { gUoReady = uo::Init(); if (!gUoReady) return; }
     acc += dt;
     if (acc > 0.5f) { acc = 0; DevPoll(); }
-    uo::IndexStep(12000);
     // Each part is timed; slow frames are logged (rate-limited) so performance problems show up in user logs.
     static LARGE_INTEGER freq; if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
-    LARGE_INTEGER t[8]; int n = 0;
+    LARGE_INTEGER t[9]; int n = 0;
     QueryPerformanceCounter(&t[n++]);
+    // The object index sweep: quick in the menus (new screens), lighter during matches (frame time matters there).
+    static int budget = 12000, frames;
+    if (++frames % 60 == 0) budget = net::InFrontend() ? 12000 : 3000;
+    uo::IndexStep(budget);               QueryPerformanceCounter(&t[n++]);
     ui::Tick(dt); ui::FastTick();      QueryPerformanceCounter(&t[n++]);
     lobby::Tick(dt);                    QueryPerformanceCounter(&t[n++]);
     settings::Tick();                   QueryPerformanceCounter(&t[n++]);
@@ -164,14 +167,24 @@ void GameTick(float dt) {
     GameTeamsTick();                    QueryPerformanceCounter(&t[n++]);
     update::Tick(dt);                   QueryPerformanceCounter(&t[n++]);
     double total = (t[n - 1].QuadPart - t[0].QuadPart) * 1000.0 / freq.QuadPart;
+    // Frame rate and our share of the frame, every 30 s (shows up in user logs when they report lag).
+    {
+        static double frames, modMs, worst; static float span;
+        frames++; modMs += total; span += dt; if (dt > worst) worst = dt;
+        if (span >= 30.0f) {
+            Log("perf: %.0f fps avg, worst frame %.0f ms, mod %.2f ms/frame, world %ls", frames / span, worst * 1000.0, modMs / frames,
+                net::WorldName().c_str());
+            frames = modMs = worst = 0; span = 0;
+        }
+    }
     static DWORD lastSlow; static int slowCount;
     if (total > 12.0) {
         slowCount++;
         if (GetTickCount() - lastSlow > 5000) {
             lastSlow = GetTickCount();
             auto ms = [&](int i) { return (t[i + 1].QuadPart - t[i].QuadPart) * 1000.0 / freq.QuadPart; };
-            Log("perf: slow tick %.1f ms (ui %.1f lobby %.1f settings %.1f rules %.1f teams %.1f update %.1f), %d slow ticks",
-                total, ms(0), ms(1), ms(2), ms(3), ms(4), ms(5), slowCount);
+            Log("perf: slow tick %.1f ms (index %.1f ui %.1f lobby %.1f settings %.1f rules %.1f teams %.1f update %.1f), %d slow ticks",
+                total, ms(0), ms(1), ms(2), ms(3), ms(4), ms(5), ms(6), slowCount);
         }
     }
 }

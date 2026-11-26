@@ -37,10 +37,12 @@ UObject* FindClass(const wchar_t* name);                       // native or BP c
 UObject* FindObjectPath(const wchar_t* path);                  // "/Game/UI/.../X.X_C"
 UObject* FindFirst(UObject* cls, bool includeDefaults = false); // first live instance of class
 std::vector<UObject*> FindAll(UObject* cls);
+std::vector<UObject*> FindAllNow(UObject* cls);                // full scan (~20 ms): objects created this frame included
 UObject* FindTransient(UObject* cls);                          // first runtime-created instance (outermost = /Engine/Transient)
 std::vector<UObject*> FindAllTransient(UObject* cls);
 UObject* Outermost(UObject* o);
-void IndexStep(int32_t budget);                                // scans a slice of the object array (call every frame)
+void IndexStep(int32_t budget);
+void Prewarm(const std::vector<const wchar_t*>& classNames);   // index these classes now (one pass over all objects)                                // scans a slice of the object array (call every frame)
 UObject* FindFunction(UObject* objOrClass, const wchar_t* name, bool isClass = false);
 UObject* FindProp(UObject* structObj, const wchar_t* name);    // walks supers
 int32_t PropOffset(UObject* structObj, const wchar_t* name);   // -1 if missing

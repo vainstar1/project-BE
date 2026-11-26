@@ -59,6 +59,8 @@ constexpr size_t Ctx_TravelType = 0xe0;
 const wchar_t* kHostURL = L"/Game/Levels/Map_Train/GameMode_CP/Map_Train_CP_Main?listen";
 
 std::wstring gTravel;     // one-shot travel request
+bool gCustomMatch;        // the current/last match was entered through the mod (not official matchmaking)
+std::wstring gOurTravel;  // the travel URL we wrote last (to tell our travels from the game's own)
 std::wstring gJoin;       // join target with retries, empty = none
 float gReady;
 DWORD gLastAttempt, gJoinStart;
@@ -69,6 +71,8 @@ using TickWorldTravelFn = void(__fastcall*)(void*, uint8_t*, float);
 TickWorldTravelFn oTickWorldTravel;
 
 void SetTravel(uint8_t* ctx, const std::wstring& url) {
+    gOurTravel = url;
+    if (url.find(L"FrontEnd") == std::wstring::npos) gCustomMatch = true;
     auto realloc_ = Fn<void*(__fastcall*)(void*, size_t, uint32_t)>(FMemoryRealloc);
     FString& s = F<FString>(ctx, Ctx_TravelURL);
     int32_t n = (int32_t)url.size() + 1;
@@ -86,9 +90,20 @@ namespace {
 void __fastcall hkTickWorldTravel(void* engine, uint8_t* ctx, float dt) {
     gCtx = ctx;
     GameTick(dt);
+    // A travel to a map that the mod didn't ask for is official matchmaking: its leaves count again.
+    {
+        FString& tu = F<FString>(ctx, Ctx_TravelURL);
+        if (tu.Num > 1 && gOurTravel != tu.c_str() && !wcsstr(tu.c_str(), L"FrontEnd") && gCustomMatch) {
+            Log("travel by the game to %ls: official match", tu.c_str());
+            gCustomMatch = false;
+        }
+    }
     bool pendingTravel = F<FString>(ctx, Ctx_TravelURL).Num > 1 || F<void*>(ctx, Off::Ctx_PendingNetGame);
     void* w0 = F<void*>(ctx, Off::Ctx_World);
-    if (!gTravel.empty() && !pendingTravel && w0 && F<void*>(w0, Off::World_AuthorityGameMode)) {
+    // A loaded world: the host and offline play have a game mode, a joined player has a connection to its host.
+    void* nd0 = w0 ? F<void*>(w0, Off::World_NetDriver) : nullptr;
+    bool loaded = w0 && (F<void*>(w0, Off::World_AuthorityGameMode) || (nd0 && F<void*>(nd0, Off::ND_ServerConnection)));
+    if (!gTravel.empty() && !pendingTravel && loaded) {
         Log("travel -> %ls", gTravel.c_str());
         SetTravel(ctx, gTravel);
         gTravel.clear();
@@ -121,6 +136,7 @@ void Travel(const std::wstring& url) { gJoin.clear(); gTravel = url; }
 void JoinHost(const std::wstring& addr) { gTravel.clear(); gJoin = addr; gAttempts = 0; gReady = 0; gJoinStart = GetTickCount(); }
 void CancelJoin() { gJoin.clear(); }
 bool Joining() { return !gJoin.empty(); }
+bool CustomMatch() { return gCustomMatch; }
 bool InNetGame() { return WorldND() != nullptr; }
 bool IsHosting() { void* nd = WorldND(); return nd && !F<void*>(nd, Off::ND_ServerConnection); }
 bool IsConnectedClient() { void* nd = WorldND(); return nd && F<void*>(nd, Off::ND_ServerConnection); }

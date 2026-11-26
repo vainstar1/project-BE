@@ -102,16 +102,36 @@ static bool IsClassObject(UObject* o) {
     return SameName(n, gClassName) || SameName(n, gBPClassName) || SameName(n, gWBPClassName);
 }
 
+// Class objects by name, kept up to date by the background sweep (IndexStep). A full scan of the object array costs
+// ~20 ms, so a class that isn't loaded (menu classes during a match) must not trigger one on every lookup.
+namespace {
+std::unordered_map<uint64_t, std::pair<UObject*, int32_t>> gClassIndex;   // FName -> (class, object index)
+bool gClassIndexComplete;                                                  // one full sweep has finished
+uint64_t NameKey(FName n) { return ((uint64_t)(uint32_t)n.Number << 32) | (uint32_t)n.Index; }
+}  // namespace
+static void NoteClassObject(UObject* o, int32_t idx) { gClassIndex[NameKey(NameOf(o))] = { o, idx }; }
+
 UObject* FindClass(const wchar_t* name) {
     FName want = MakeName(name);
     auto it = gClassCache.find(name);
     // Blueprint classes get unloaded and reloaded between maps: re-validate the cached object completely.
     if (it != gClassCache.end() && IsLive(it->second) && SameName(NameOf(it->second), want) && IsClassObject(it->second)) return it->second;
     gClassCache.erase(name);
+    auto ci = gClassIndex.find(NameKey(want));
+    if (ci != gClassIndex.end()) {
+        FUObjectItem* item = Item(ci->second.second);
+        UObject* o = ci->second.first;
+        if (item && item->Object == o && !(item->Flags & (EIF_PendingKill | EIF_Unreachable)) && SameName(NameOf(o), want) && IsClassObject(o)) {
+            gClassCache[name] = o; return o;
+        }
+        gClassIndex.erase(ci);
+    }
+    // Until the sweep has seen every object once, fall back to a full scan.
+    if (gClassIndexComplete) return nullptr;
     int32_t n = NumObjects();
     for (int32_t i = 0; i < n; i++) {
         UObject* o = ObjectAt(i);
-        if (o && SameName(NameOf(o), want) && IsClassObject(o)) { gClassCache[name] = o; return o; }
+        if (o && SameName(NameOf(o), want) && IsClassObject(o)) { gClassCache[name] = o; NoteClassObject(o, i); return o; }
     }
     return nullptr;
 }
@@ -134,20 +154,30 @@ UObject* FindObjectPath(const wchar_t* path) {
 // per tracked class, the objects found in the last complete sweep. Searches read that list (validated on access).
 namespace {
 struct Entry { UObject* obj; UObject* cls; int32_t idx; };
-struct Tracked { UObject* cls; std::vector<Entry> cur, next; bool swept; };
-std::vector<Tracked> gTracked;
-std::unordered_map<UObject*, uint32_t> gClassMask;    // object class -> bitmask of tracked classes it derives from
+struct Tracked { UObject* cls; int32_t clsIdx; std::vector<Entry> cur, next; bool swept; };
+std::vector<Tracked> gTracked;                          // at most 64 (one bit each in a class mask)
+std::unordered_map<UObject*, uint64_t> gClassMask;      // object class -> bitmask of tracked classes it derives from
 int32_t gSweepPos;
+UObject* gLastClass; uint64_t gLastMask;                // objects of one class often sit next to each other
 
-uint32_t MaskOf(UObject* objClass) {
+uint64_t MaskOf(UObject* objClass) {
+    if (objClass == gLastClass) return gLastMask;
     auto it = gClassMask.find(objClass);
-    if (it != gClassMask.end()) return it->second;
-    uint32_t m = 0;
-    for (size_t i = 0; i < gTracked.size(); i++)
-        for (UObject* c = objClass; c; c = F<UObject*>(c, Struct_Super))
-            if (c == gTracked[i].cls) { m |= 1u << i; break; }
-    gClassMask[objClass] = m;
+    uint64_t m = 0;
+    if (it != gClassMask.end()) m = it->second;
+    else {
+        for (size_t i = 0; i < gTracked.size(); i++)
+            for (UObject* c = objClass; c; c = F<UObject*>(c, Struct_Super))
+                if (c == gTracked[i].cls) { m |= 1ull << i; break; }
+        gClassMask[objClass] = m;
+    }
+    gLastClass = objClass; gLastMask = m;
     return m;
+}
+void ResetMasks() { gClassMask.clear(); gLastClass = nullptr; }
+bool ClassAlive(const Tracked& t) {
+    FUObjectItem* it = Item(t.clsIdx);
+    return it && it->Object == t.cls && !(it->Flags & (EIF_PendingKill | EIF_Unreachable));
 }
 std::vector<UObject*> FullScan(UObject* cls) {
     std::vector<UObject*> r;
@@ -160,27 +190,57 @@ std::vector<UObject*> FullScan(UObject* cls) {
     }
     return r;
 }
-Tracked* Track(UObject* cls) {
-    for (auto& t : gTracked) if (t.cls == cls) return &t;
-    if (gTracked.size() >= 32) return nullptr;
-    gTracked.push_back(Tracked{ cls, {}, {}, false });
-    gClassMask.clear();
-    Tracked& t = gTracked.back();
-    // First use: one full scan so the caller gets an answer now.
+// Adds classes to the index. Blueprint classes are unloaded and loaded again with every map, so entries of classes
+// that no longer exist are dropped first. New entries are filled with one pass over the object array.
+void AddTracked(const std::vector<UObject*>& classes) {
+    std::vector<UObject*> add;
+    for (UObject* c : classes) {
+        if (!c) continue;
+        bool have = false;
+        for (auto& t : gTracked) if (t.cls == c) have = true;
+        if (!have && std::find(add.begin(), add.end(), c) == add.end()) add.push_back(c);
+    }
+    if (add.empty()) return;
+    size_t before = gTracked.size();
+    gTracked.erase(std::remove_if(gTracked.begin(), gTracked.end(), [](const Tracked& t) { return !ClassAlive(t); }), gTracked.end());
+    if (gTracked.size() != before) gSweepPos = 0;   // bit positions moved: restart the running sweep
+    for (auto& t : gTracked) if (gTracked.size() != before) t.next.clear();
+    size_t first = gTracked.size();
+    for (UObject* c : add) {
+        if (gTracked.size() >= 64) break;
+        gTracked.push_back(Tracked{ c, F<int32_t>(c, Obj_Index), {}, {}, false });
+    }
+    ResetMasks();
+    if (first == gTracked.size()) return;
+    uint64_t newBits = 0;
+    for (size_t k = first; k < gTracked.size(); k++) newBits |= 1ull << k;
     int32_t n = NumObjects();
     for (int32_t i = 0; i < n; i++) {
         FUObjectItem* it = Item(i);
         UObject* o = it ? it->Object : nullptr;
-        if (!o || (it->Flags & (EIF_PendingKill | EIF_Unreachable)) || IsDefault(o)) continue;
-        if (IsA(o, cls)) t.cur.push_back({ o, ClassOf(o), i });
+        if (!o || (it->Flags & (EIF_PendingKill | EIF_Unreachable))) continue;
+        UObject* c = ClassOf(o);
+        uint64_t m = c ? MaskOf(c) & newBits : 0;
+        if (!m || IsDefault(o)) continue;
+        for (size_t k = first; k < gTracked.size(); k++) if (m & (1ull << k)) gTracked[k].cur.push_back({ o, c, i });
     }
-    t.swept = true;
-    return &t;
+    for (size_t k = first; k < gTracked.size(); k++) gTracked[k].swept = true;
+}
+Tracked* Track(UObject* cls) {
+    for (auto& t : gTracked) if (t.cls == cls) return &t;
+    AddTracked({ cls });
+    for (auto& t : gTracked) if (t.cls == cls) return &t;
+    return nullptr;
 }
 }  // namespace
 
+void Prewarm(const std::vector<const wchar_t*>& classNames) {
+    std::vector<UObject*> cls;
+    for (const wchar_t* n : classNames) if (UObject* c = FindClass(n)) cls.push_back(c);
+    AddTracked(cls);
+}
+
 void IndexStep(int32_t budget) {
-    if (gTracked.empty()) return;
     int32_t n = NumObjects();
     int32_t end = std::min(n, gSweepPos + budget);
     for (int32_t i = gSweepPos; i < end; i++) {
@@ -188,15 +248,18 @@ void IndexStep(int32_t budget) {
         UObject* o = it ? it->Object : nullptr;
         if (!o || (it->Flags & (EIF_PendingKill | EIF_Unreachable))) continue;
         UObject* c = ClassOf(o);
-        uint32_t m = c ? MaskOf(c) : 0;
+        if (!c) continue;
+        if (IsClassObject(o)) NoteClassObject(o, i);
+        uint64_t m = gTracked.empty() ? 0 : MaskOf(c);
         if (!m || IsDefault(o)) continue;
-        for (size_t k = 0; k < gTracked.size(); k++) if (m & (1u << k)) gTracked[k].next.push_back({ o, c, i });
+        for (size_t k = 0; k < gTracked.size(); k++) if (m & (1ull << k)) gTracked[k].next.push_back({ o, c, i });
     }
     gSweepPos = end;
     if (gSweepPos >= n) {
         gSweepPos = 0;
+        gClassIndexComplete = true;
         for (auto& t : gTracked) { t.cur.swap(t.next); t.next.clear(); }
-        if (gClassMask.size() > 200000) gClassMask.clear();
+        if (gClassMask.size() > 200000) ResetMasks();
     }
 }
 
@@ -215,6 +278,7 @@ std::vector<UObject*> FindAll(UObject* cls) {
     for (auto& e : t->next) if (valid(e) && std::find(r.begin(), r.end(), e.obj) == r.end()) r.push_back(e.obj);
     return r;
 }
+std::vector<UObject*> FindAllNow(UObject* cls) { return cls ? FullScan(cls) : std::vector<UObject*>(); }
 UObject* FindFirst(UObject* cls, bool includeDefaults) {
     if (!cls) return nullptr;
     if (!includeDefaults) { auto v = FindAll(cls); return v.empty() ? nullptr : v[0]; }

@@ -8,14 +8,20 @@ Install
 2. From then on, play Bleeding Edge from Steam as usual. The mod loads by itself and updates itself.
 
 Playing
-- Main menu > CUSTOM GAME lists your friends' games and public games. Pick one to join, or CREATE GAME.
+- Main menu > CUSTOM GAMES lists your friends' games and public games. Pick one to join, or CREATE GAME.
+  The official Custom Queue is the last row of that list.
 - In your lobby: INVITE opens Steam's invite list. Friends can also right-click you in Steam > Join Game.
-- Click a team slot to switch teams (or join the spectators). Press START when everyone is ready.
-- SETTINGS: privacy, team size, score, objectives, capture speed and map modifiers.
+- Click "Join" on the other team or "+ Spectate" to move. Click your own name to swap teams.
+  With a controller, LT / RT switch teams. The host can click another player to move them.
+- SETTINGS: privacy, spectator places, team size, points / cells to win, objective rotation, capture speed
+  and map mods (Off, All, or Choose to pick them one by one).
 - MAPS: every arena in both modes, plus the Dojo and the developers' Playground.
-- BACK takes you to the main menu without leaving the lobby (change skins, then CUSTOM GAME to return).
+- BACK takes you to the main menu without leaving the lobby (change skins, then CUSTOM GAMES to return).
   LEAVE leaves the lobby.
-- Friends can join while a match is running; they drop straight into it.
+- Friends can join while a match is running; they drop straight into it. If you left a running match,
+  JOIN MATCH in the lobby takes you back in.
+- Text chat in custom games reaches everyone in the match, spectators included.
+- Leaving a custom game early never counts as leaving an official match.
 
 Remove
 - Run BE1v1.exe --uninstall, or in Steam: Bleeding Edge > Properties > Installed Files > Verify integrity.

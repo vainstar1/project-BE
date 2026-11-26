@@ -1,8 +1,13 @@
-// Custom Game settings panel: hides the rows that don't apply to player-hosted games (Spectators, Run as Dedicated
-// Server) and adds rule rows built from the game's own option widget (Widget_ShifterOption_C), so they look and
-// behave exactly like the rows Ninja Theory placed there.
+// Custom Game settings panel: hides the row that doesn't apply to player-hosted games (Run as Dedicated Server) and
+// adds rule rows built from the game's own option widgets (Widget_ShifterOption_C / Widget_TickBoxOption_C), so they
+// look and behave exactly like the rows Ninja Theory placed there.
+//
+// Panel (host):  Privacy, Lock Teams, Spectators (the game's rows), then
+//   Team Size, Points to Win (Objective Control), Cells to Win (Power Collection), Objective Rotation, Capture Speed,
+//   Map Mods (Off / Choose / All) and, only while "Choose" is selected, one on/off row per modifier.
 #include <windows.h>
 #include <vector>
+#include <string>
 #include "uobj.h"
 #include "mod.h"
 
@@ -10,14 +15,17 @@ namespace settings {
 namespace {
 // MBOptionWidget fields
 constexpr size_t OW_OptionName = 0x330, OW_IsTextValue = 0x361, OW_TextOptions = 0x368, OW_Min = 0x3a0, OW_Max = 0x3a4, OW_Index = 0x3b0;
+enum Row { RTeam, RCp, RPc, RRotation, RCapture, RMods, NumRows };
 
 uo::UObject* gBox;                 // the settings scroll box we decorated
-uo::UObject* gRows[4];             // team size, score, objectives, capture
-uo::UObject* gAllMods;             // "All Map Mods" tick box
+uo::UObject* gSpecRow;             // the game's own Spectators row
+uo::UObject* gRows[NumRows];
 uo::UObject* gModRows[32];         // one tick box per map modifier
-int gAllLast = -1;
+int gModModeShown = -1;            // mod rows visibility we last applied
 
-bool Visible(uo::UObject* w) { uo::Call c(w, L"GetParent"); return c.ok() && c.run().get<uo::UObject*>(L"ReturnValue"); }
+bool OnScreen(uo::UObject* w) { uo::Call c(w, L"GetParent"); return c.ok() && c.run().get<uo::UObject*>(L"ReturnValue"); }
+bool Live(uo::UObject* w) { return w && uo::IsLive(w); }
+int IndexOf(uo::UObject* row) { return Live(row) ? F<int32_t>(row, OW_Index) : -1; }
 
 // The designer-placed Spectators row of the settings panel on screen (its parent is the rows' scroll box).
 uo::UObject* SpectatorsRow() {
@@ -25,9 +33,8 @@ uo::UObject* SpectatorsRow() {
     static FName want = uo::MakeName(L"Shifter_Spectators");
     for (uo::UObject* w : uo::FindAll(cls)) {
         if (!uo::NameIs(w, want)) continue;
-        // ...inside a Custom Game screen that is on screen
         for (uo::UObject* o = uo::OuterOf(w); o; o = uo::OuterOf(o))
-            if (uo::Name(uo::ClassOf(o)) == L"CustomGameScreen_C") { if (Visible(o)) return w; break; }
+            if (uo::Name(uo::ClassOf(o)) == L"CustomGameScreen_C") { if (OnScreen(o)) return w; break; }
     }
     return nullptr;
 }
@@ -41,18 +48,20 @@ uo::UObject* Sibling(uo::UObject* box, const wchar_t* name) {
     return nullptr;
 }
 
-uo::UObject* MakeRow(uo::UObject* box, uo::UObject* rowClass, const wchar_t* label, const wchar_t* const* opts, int n, int cur) {
+uo::UObject* MakeRow(uo::UObject* box, uo::UObject* rowClass, const wchar_t* label, const std::vector<std::wstring>& opts, int cur) {
     uo::UObject* lib = uo::FindFirst(uo::FindClass(L"WidgetBlueprintLibrary"), true);
-    if (!lib) return nullptr;
+    if (!lib || opts.empty()) return nullptr;
     uo::Call c(lib, L"Create");
     c.set<uo::UObject*>(L"WorldContextObject", (uo::UObject*)net::World()).set<uo::UObject*>(L"WidgetType", rowClass).set<uo::UObject*>(L"OwningPlayer", nullptr).run();
     uo::UObject* w = c.get<uo::UObject*>(L"ReturnValue");
     if (!w) return nullptr;
+    int n = (int)opts.size();
+    if (cur < 0 || cur >= n) cur = 0;
     uo::MakeText((uo::FText*)(w + OW_OptionName), label);
     F<bool>(w, OW_IsTextValue) = true;
     auto& arr = F<TArray<uo::FText>>(w, OW_TextOptions);
     arr.Data = (uo::FText*)uo::Malloc(sizeof(uo::FText) * n);
-    for (int i = 0; i < n; i++) uo::MakeText(&arr.Data[i], opts[i]);
+    for (int i = 0; i < n; i++) uo::MakeText(&arr.Data[i], opts[i].c_str());
     arr.Num = arr.Max = n;
     F<int32_t>(w, OW_Min) = 0; F<int32_t>(w, OW_Max) = n - 1; F<int32_t>(w, OW_Index) = cur;
     uo::Call(box, L"AddChild").set<uo::UObject*>(L"Content", w).run();
@@ -60,90 +69,114 @@ uo::UObject* MakeRow(uo::UObject* box, uo::UObject* rowClass, const wchar_t* lab
     uo::Call(w, L"UpdateWidget").run();
     return w;
 }
+std::vector<std::wstring> List(const wchar_t* const* o, int n) { return std::vector<std::wstring>(o, o + n); }
+void SetIndex(uo::UObject* row, int i) {
+    if (!Live(row) || IndexOf(row) == i) return;
+    uo::Call(row, L"ChangeOption").set<int32_t>(L"NewIndex", i).run();
+    uo::Call(row, L"AdjustWidgetToIndex").set<int32_t>(L"NewIndex", i).run();
+}
+void ShowModRows(int mode) {
+    if (mode == gModModeShown) return;
+    gModModeShown = mode;
+    for (int i = 0; i < rules::NumMods() && i < 32; i++)
+        if (Live(gModRows[i])) uo::Call(gModRows[i], L"SetVisibility").set<uint8_t>(L"InVisibility", mode == 1 ? 0 : 1).run();
+}
 
 void Decorate(uo::UObject* spectators) {
     uo::Call p(spectators, L"GetParent");
     uo::UObject* box = p.run().get<uo::UObject*>(L"ReturnValue");
     if (!box) return;
     gBox = box;
-    for (uo::UObject* hide : { spectators, Sibling(box, L"Tickbox_Server") })
-        if (hide) uo::Call(hide, L"SetVisibility").set<uint8_t>(L"InVisibility", 1).run();   // Collapsed
+    if (uo::UObject* hide = Sibling(box, L"Tickbox_Server")) uo::Call(hide, L"SetVisibility").set<uint8_t>(L"InVisibility", 1).run();
+    uo::Call(spectators, L"SetVisibility").set<uint8_t>(L"InVisibility", 0).run();   // earlier versions hid it
+    // The game's Spectators row starts from its own default; show the lobby's actual number of spectator places.
+    gSpecRow = spectators;
+    Log("settings: spectators row text=%d min=%d max=%d index=%d, lobby has %d", F<bool>(spectators, OW_IsTextValue), F<int32_t>(spectators, OW_Min),
+        F<int32_t>(spectators, OW_Max), F<int32_t>(spectators, OW_Index), lobby::SpectatorPlaces());
+    SetIndex(spectators, lobby::SpectatorPlaces() - (F<bool>(spectators, OW_IsTextValue) ? 0 : F<int32_t>(spectators, OW_Min)));
     rules::Values v = rules::Current();
     uo::UObject* cls = uo::ClassOf(spectators);
     int n;
     const wchar_t* const* o;
-    o = rules::TeamSizeOptions(&n);  gRows[0] = MakeRow(box, cls, L"Team Size", o, n, v.teamSize - 1);
-    o = rules::ScoreOptions(&n);     gRows[1] = MakeRow(box, cls, L"Score", o, n, v.score);
-    o = rules::ObjectiveOptions(&n); gRows[2] = MakeRow(box, cls, L"Objectives", o, n, v.objectives);
-    o = rules::CaptureOptions(&n);   gRows[3] = MakeRow(box, cls, L"Capturing", o, n, v.capture);
-    // Map modifiers: tick boxes like "Lock Teams".
+    o = rules::TeamSizeOptions(&n);  gRows[RTeam] = MakeRow(box, cls, L"Team Size", List(o, n), v.teamSize - 1);
+    gRows[RCp] = MakeRow(box, cls, L"Points to Win", rules::CpScoreOptions(), rules::CpIndex(v.cp));
+    gRows[RPc] = MakeRow(box, cls, L"Cells to Win", rules::PcScoreOptions(), rules::PcIndex(v.pc));
+    o = rules::ObjectiveOptions(&n); gRows[RRotation] = MakeRow(box, cls, L"Objectives", List(o, n), v.objectives);
+    o = rules::CaptureOptions(&n);   gRows[RCapture] = MakeRow(box, cls, L"Capture Speed", List(o, n), v.capture);
+    o = rules::ModModeOptions(&n);   gRows[RMods] = MakeRow(box, cls, L"Map Mods", List(o, n), v.modMode);
+    // One on/off row per modifier, styled like "Lock Teams"; shown only while Map Mods is "Choose".
     if (uo::UObject* tick = Sibling(box, L"Tickbox_Teams")) {
         uo::UObject* tcls = uo::ClassOf(tick);
-        const wchar_t* offOn[] = { L"Off", L"On" };
-        int nm = rules::NumMods();
-        bool all = nm > 0;
-        for (int i = 0; i < nm; i++) if (!(v.mods & (1u << i))) all = false;
-        gAllMods = MakeRow(box, tcls, L"All Map Mods", offOn, 2, all ? 1 : 0);
-        gAllLast = all ? 1 : 0;
-        for (int i = 0; i < nm && i < 32; i++) gModRows[i] = MakeRow(box, tcls, rules::ModName(i), offOn, 2, (v.mods >> i) & 1);
+        for (int i = 0; i < rules::NumMods() && i < 32; i++)
+            gModRows[i] = MakeRow(box, tcls, rules::ModName(i), { L"Off", L"On" }, (v.mods >> i) & 1);
     }
+    gModModeShown = -1;
+    ShowModRows(v.modMode);
     Log("settings: rows added to %p", box);
 }
 }  // namespace
 
-void DevAddRow() {
-    if (!gBox) return;
-    int n; const wchar_t* const* o = rules::ScoreOptions(&n);
-    uo::UObject* sp = SpectatorsRow();
-    MakeRow(gBox, sp ? uo::ClassOf(sp) : uo::FindClass(L"Widget_ShifterOption_C"), L"Dev Row", o, n, 3);
-    Log("settings: dev row added");
+// Developer testing: "ui setrow <row> <index>" (rows: 0 team, 1 points, 2 cells, 3 objectives, 4 capture, 5 mods,
+// 10+i map mod i, 99 spectators).
+void DevSetRow(int row, int index) {
+    uo::UObject* r = row == 99 ? gSpecRow : row >= 10 ? (row - 10 < 32 ? gModRows[row - 10] : nullptr) : row < NumRows ? gRows[row] : nullptr;
+    Log("settings: dev row %d -> %d (%p)", row, index, r);
+    SetIndex(r, index);
 }
 
 void Tick() {
     if (!lobby::IsHost() || !net::MenuSettled()) return;
     static DWORD last;
     DWORD now = GetTickCount();
-    if (now - last < 300) return;
+    if (now - last < 100) return;
     last = now;
-    if (!gBox || !uo::IsLive(gBox) || !Visible(gBox)) {
+    if (!gBox || !uo::IsLive(gBox) || !OnScreen(gBox)) {
         gBox = nullptr;
         for (auto& r : gRows) r = nullptr;
         for (auto& r : gModRows) r = nullptr;
-        gAllMods = nullptr; gAllLast = -1;
-        // Add our rows the first time the panel is open (rows added while it is collapsed never draw their values).
-        if (uo::UObject* sp = SpectatorsRow()) {
-            uo::UObject* menu = nullptr;
-            for (uo::UObject* o = uo::OuterOf(sp); o; o = uo::OuterOf(o))
-                if (uo::Name(uo::ClassOf(o)) == L"CustomGameSettingsMenu_C") { menu = o; break; }
-            // ...and once its opening transition is over: rows added while it opens never show their values.
-            static DWORD openSince;
-            uo::Call c(menu ? menu : sp, L"IsVisible");
-            bool open = menu && c.ok() && c.run().get<bool>(L"ReturnValue");
-            if (!open) openSince = 0;
-            else if (!openSince) openSince = now;
-            else if (now - openSince > 500) { openSince = 0; Decorate(sp); }
-        }
+        gSpecRow = nullptr;
+        // Rows are added once the panel is open and its opening transition has settled: rows added while it is
+        // collapsed or still sliding in never draw their values.
+        static DWORD openSince;
+        uo::UObject* sp = SpectatorsRow();
+        uo::UObject* menu = nullptr;
+        for (uo::UObject* o = sp ? uo::OuterOf(sp) : nullptr; o; o = uo::OuterOf(o))
+            if (uo::Name(uo::ClassOf(o)) == L"CustomGameSettingsMenu_C") { menu = o; break; }
+        uo::Call c(menu ? menu : sp, L"IsVisible");
+        bool open = menu && c.ok() && c.run().get<bool>(L"ReturnValue");
+        if (!open) openSince = 0;
+        else if (!openSince) openSince = now;
+        else if (now - openSince > 250) { openSince = 0; Decorate(sp); }
         if (!gBox) return;
     }
     rules::Values v = rules::Current();
-    if (gRows[0] && uo::IsLive(gRows[0])) v.teamSize = F<int32_t>(gRows[0], OW_Index) + 1;
-    if (gRows[1] && uo::IsLive(gRows[1])) v.score = F<int32_t>(gRows[1], OW_Index);
-    if (gRows[2] && uo::IsLive(gRows[2])) v.objectives = F<int32_t>(gRows[2], OW_Index);
-    if (gRows[3] && uo::IsLive(gRows[3])) v.capture = F<int32_t>(gRows[3], OW_Index);
-    // "All Map Mods" switches every modifier row; the rows decide the actual set.
-    if (gAllMods && uo::IsLive(gAllMods)) {
-        int all = F<int32_t>(gAllMods, OW_Index);
-        if (gAllLast >= 0 && all != gAllLast)
-            for (int i = 0; i < rules::NumMods() && i < 32; i++)
-                if (gModRows[i] && uo::IsLive(gModRows[i]) && F<int32_t>(gModRows[i], OW_Index) != all)
-                { uo::Call(gModRows[i], L"ChangeOption").set<int32_t>(L"NewIndex", all).run();
-                  uo::Call(gModRows[i], L"AdjustWidgetToIndex").set<int32_t>(L"NewIndex", all).run(); }
-        gAllLast = all;
+    if (IndexOf(gRows[RTeam]) >= 0) v.teamSize = IndexOf(gRows[RTeam]) + 1;
+    if (IndexOf(gRows[RCp]) >= 0) v.cp = rules::CpValueAt(IndexOf(gRows[RCp]));
+    if (IndexOf(gRows[RPc]) >= 0) v.pc = rules::PcValueAt(IndexOf(gRows[RPc]));
+    if (IndexOf(gRows[RRotation]) >= 0) v.objectives = IndexOf(gRows[RRotation]);
+    if (IndexOf(gRows[RCapture]) >= 0) v.capture = IndexOf(gRows[RCapture]);
+    int mode = IndexOf(gRows[RMods]);
+    if (mode >= 0) {
+        uint32_t all = (1u << rules::NumMods()) - 1;
+        if (mode != v.modMode && mode == 1) {
+            // Switching to "Choose": start from what was active (everything after "All").
+            uint32_t start = v.modMode == 2 ? all : v.mods;
+            for (int i = 0; i < rules::NumMods() && i < 32; i++) SetIndex(gModRows[i], (start >> i) & 1);
+        }
+        v.modMode = mode;
+        if (mode == 0) v.mods = 0;
+        else if (mode == 2) v.mods = all;
+        else {
+            uint32_t mods = 0;
+            for (int i = 0; i < rules::NumMods() && i < 32; i++) if (IndexOf(gModRows[i]) == 1) mods |= 1u << i;
+            v.mods = mods;
+        }
+        ShowModRows(mode);
     }
-    uint32_t mods = 0;
-    for (int i = 0; i < rules::NumMods() && i < 32; i++)
-        if (gModRows[i] && uo::IsLive(gModRows[i]) && F<int32_t>(gModRows[i], OW_Index) == 1) mods |= 1u << i;
-    if (gModRows[0] && uo::IsLive(gModRows[0])) v.mods = mods;
+    if (IndexOf(gSpecRow) >= 0) {
+        int places = IndexOf(gSpecRow) + (F<bool>(gSpecRow, OW_IsTextValue) ? 0 : F<int32_t>(gSpecRow, OW_Min));
+        if (places != lobby::SpectatorPlaces()) lobby::SetSpectatorPlaces(places);
+    }
     rules::Values old = rules::Current();
     if (v.teamSize != old.teamSize) lobby::SetTeamSize(v.teamSize);
     rules::Set(v);

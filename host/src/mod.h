@@ -5,14 +5,15 @@
 #include <functional>
 #include <vector>
 
-#define BE1V1_VERSION "2.1.1"
-#define BE1V1_PROTOCOL "2"     // lobbies only list/accept peers with the same protocol
+#define BE1V1_VERSION "2.2.0"
+#define BE1V1_PROTOCOL "3"     // lobbies only list/accept peers with the same protocol
 
 namespace net {
 void Travel(const std::wstring& url);          // absolute travel on the next tick (menu -> map, or back to menu)
 void JoinHost(const std::wstring& addr);       // connect to a host, retrying while it loads (cancelled by CancelJoin/Travel)
 void CancelJoin();
 bool Joining();
+bool CustomMatch();                            // the current/last match was a player-hosted one (entered through the mod)
 bool InNetGame();                              // world has a net driver (hosting or connected)
 bool IsHosting();                              // net driver without server connection
 bool IsConnectedClient();                      // net driver with a server connection
@@ -37,6 +38,8 @@ void Tick(float dt);
 void Install();
 std::wstring LobbyCode();       // shareable join code for the current lobby
 void SetTeamSize(int perTeam);   // host: maximum players per team
+int SpectatorPlaces();          // spectator places in the lobby
+void SetSpectatorPlaces(int n);  // host
 void OpenInvite();              // Steam invite dialog for the current lobby
 void OpenBrowser();             // CUSTOM GAME: list of joinable games + create
 bool OnBackPressed();           // lobby screen back: true = handled (stay in lobby)
@@ -52,7 +55,10 @@ void ShowBusy(bool on);
 void Ask(const std::wstring& body, const std::wstring& yes, const std::wstring& no, std::function<void(bool yes)> cb);
 enum { kYes = -2, kNo = -1 };
 // Message, a column of buttons, and two bottom buttons (empty label hides "yes"). cb gets the row index, kYes or kNo.
-void List(const std::wstring& body, const std::vector<std::wstring>& rows, const std::wstring& yes, const std::wstring& no, std::function<void(int)> cb);
+int List(const std::wstring& body, const std::vector<std::wstring>& rows, const std::wstring& yes, const std::wstring& no, std::function<void(int)> cb);
+bool UpdateList(int listId, const std::vector<std::wstring>& rows);   // false once the list is gone
+bool ListOpen(int listId);
+void OpenOfficialCustomQueue();  // the game's own Custom Queue (official servers)
 bool PromptOpen();
 void FastTick();
 std::wstring TextToString(const void* ftext);
@@ -70,7 +76,9 @@ std::wstring LatestVersion();
 }
 
 namespace rules {
-struct Values { int score = 3, objectives = 0, capture = 0, teamSize = 4; uint32_t mods = 0; };
+// cp / pc: points (Objective Control) and cells (Power Collection) to win, 0 = the map's own target.
+// modMode: how the host picks map modifiers in the panel (0 off, 1 chosen one by one, 2 all).
+struct Values { int cp = 0, objectives = 0, capture = 0, teamSize = 4; uint32_t mods = 0; int pc = 0, modMode = 0; };
 int NumMods();
 const wchar_t* ModName(int i);
 void Install();
@@ -78,17 +86,23 @@ Values Current();
 void Set(const Values& v);
 std::string Encode();
 Values Decode(const std::string& s);
-const wchar_t* const* ScoreOptions(int* n);
 const wchar_t* const* ObjectiveOptions(int* n);
 const wchar_t* const* CaptureOptions(int* n);
 const wchar_t* const* TeamSizeOptions(int* n);
-void Tick();                 // applies the rules to the match world's objective data
+const wchar_t* const* ModModeOptions(int* n);
+std::vector<std::wstring> CpScoreOptions();
+std::vector<std::wstring> PcScoreOptions();
+int CpIndex(int value);
+int PcIndex(int value);
+int CpValueAt(int index);
+int PcValueAt(int index);
+void Tick();                 // re-applies the rules while the match world streams in
 void ApplyOnMapLoad();
 }
 
 namespace settings {
 void Tick();                 // adds our rows to the Custom Game settings panel and reads them (host)
-void DevAddRow();
+void DevSetRow(int row, int index);
 }
 
 std::wstring ModDir();          // folder that holds be1v1.dll

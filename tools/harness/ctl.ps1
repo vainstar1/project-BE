@@ -7,7 +7,8 @@ param(
     [string]$Dll = '',
     [int]$Instance = 1,
     [switch]$NoNative,
-    [string]$Url = ''
+    [string]$Url = '',
+    [string]$Res = $(if ($env:BE_RES) { $env:BE_RES } else { '960x540' })
 )
 $ErrorActionPreference = 'Stop'
 $gameWin64 = 'D:\SteamLibrary\steamapps\common\Bleeding Edge\Moblade\Binaries\Win64'
@@ -121,7 +122,8 @@ function Start-Game {
         $src = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'ue4ss\Mods\BEProbe\Scripts\main.lua'))
         [IO.File]::WriteAllText((Join-Path $ue4ssDir 'Mods\BEProbe\Scripts\main.lua'), $src.Replace('tools\harness\ue4ss\]]', "tools\harness\ue4ss$Instance\]]"))
     }
-    $a = "-windowed -ResX=960 -ResY=540 $ExtraArgs"
+    $rx, $ry = $Res -split 'x'
+    $a = "-windowed -ResX=$rx -ResY=$ry $ExtraArgs"
     if ($NoNative) {
         $p = Start-Process -FilePath $runExe -ArgumentList $a -WorkingDirectory $gameWin64 -PassThru
         "launched instance $Instance pid=$($p.Id)"
@@ -131,7 +133,7 @@ function Start-Game {
         $copy = Join-Path $runDir ("be1v1_{0}.dll" -f (Get-Date -Format 'HHmmssfff'))
         Copy-Item $nativeDll $copy
         $launcher = Join-Path $PSScriptRoot '..\..\build\devlaunch.exe'
-        $gpid = & $launcher $runExe $copy @(@($Url) | Where-Object { $_ }) -windowed -ResX=960 -ResY=540 @($ExtraArgs -split ' ' | Where-Object { $_ })
+        $gpid = & $launcher $runExe $copy @(@($Url) | Where-Object { $_ }) -windowed "-ResX=$rx" "-ResY=$ry" @($ExtraArgs -split ' ' | Where-Object { $_ })
         "launched instance $Instance pid=$gpid (native)"
     }
 }

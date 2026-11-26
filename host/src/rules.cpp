@@ -1,10 +1,11 @@
 // Match rules for custom games. The host picks them in the Custom Game settings panel; they travel in the lobby data
-// and every player applies the same values to the map's objective data when the match world loads (before the
+// and every player applies the same values to the map's objective data while the match world loads (before the
 // match starts), so the deterministic rollback simulation stays identical on all machines.
 #include <windows.h>
 #include <map>
 #include <set>
 #include <string>
+#include <vector>
 #include <cstdio>
 #include <algorithm>
 #include <cwctype>
@@ -15,9 +16,6 @@
 
 namespace rules {
 namespace {
-// Options shown in the settings rows (index -> value). Index 'kDefault*' leaves the map's own value.
-const wchar_t* kScoreText[] = { L"25%", L"50%", L"75%", L"Default", L"150%", L"200%", L"300%", L"500%" };
-const float kScoreMul[] = { 0.25f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, 5.0f };
 // Map modifiers (ids from the game's map mod list) and their names in the settings panel.
 const wchar_t* kModIds[] = { L"DoubleDamage", L"SuperPowered", L"Killstreak", L"ExplodeOnDeath", L"CellPowerup", L"AllObjectives",
                              L"Barriers", L"PowerZones", L"SingleObjective", L"Slime", L"SpeedPads", L"VIP" };
@@ -27,25 +25,37 @@ constexpr int kNumMods = sizeof(kModIds) / sizeof(kModIds[0]);
 constexpr uintptr_t A_ActiveModsCVarValue = 0x145341278;   // FString* of the MapMods.ActiveMapMods console variable
 constexpr uintptr_t A_ModsFromCVar = 0x14102c6b0;          // bool UMBMapModsManager::TrySetActiveMapModsFromCVar()
 constexpr uintptr_t A_ModsWorldInit = 0x14101a6d0;         // UMBMapModsManager world init (reads the CVar offline only)
-constexpr int kScoreDefault = 3;
-const wchar_t* kObjText[] = { L"Default", L"Fast", L"Slow", L"Fixed" };   // objective rotation
+const wchar_t* kObjText[] = { L"Default", L"Rotate Faster", L"Rotate Slower", L"Never Rotate" };   // objective rotation
 const float kObjMul[] = { 1.0f, 0.5f, 2.0f, 0.0f };
-const wchar_t* kCapText[] = { L"Default", L"Fast", L"Slow" };             // capture speed
+const wchar_t* kCapText[] = { L"Default", L"Fast", L"Slow" };                // capture speed
 const float kCapMul[] = { 1.0f, 0.5f, 2.0f };
 const wchar_t* kTeamText[] = { L"1v1", L"2v2", L"3v3", L"4v4" };
+const wchar_t* kModModeText[] = { L"Off", L"Choose", L"All" };
 
 Values gCur;                       // current rules (host: from the panel; members: from the lobby)
-uo::UObject* gAppliedWorld;
-std::map<uo::UObject*, std::pair<int, float>> gOrigPoints;   // points manager data -> (PointsRequiredToWin, CycleActiveTime)
-std::map<uo::UObject*, float> gOrigCapture;                    // capture point data -> CaptureTime
-std::map<uo::UObject*, int> gOrigSeeds;
 
 // MBCapturePointManagerData / MBCapturePointData / MBSeedManagerActorData fields
 constexpr size_t PMD_PointsRequiredToWin = 0x4c, PMD_InfiniteCycle = 0x98, PMD_CycleActiveTime = 0x9c;
 constexpr size_t CPD_CaptureTime = 0x220;
+constexpr size_t SMD_SeedsRequiredValue = 0x1b0;   // SeedsRequired (struct at 0x188) base value: 50 on every map
+
+// Score choices: index 0 keeps the map's own target.
+std::vector<int> MakeSteps(std::initializer_list<std::pair<int, int>> ranges /* (to, step) */, int from) {
+    std::vector<int> v = { 0 };
+    int x = from;
+    for (auto& r : ranges) for (; x <= r.first; x += r.second) v.push_back(x);
+    return v;
+}
+const std::vector<int>& CpValues() { static std::vector<int> v = MakeSteps({ { 1000, 50 }, { 2000, 100 }, { 5000, 500 } }, 50); return v; }
+const std::vector<int>& PcValues() { static std::vector<int> v = MakeSteps({ { 30, 1 }, { 100, 5 }, { 200, 10 } }, 1); return v; }
+std::vector<std::wstring> Texts(const std::vector<int>& v) {
+    std::vector<std::wstring> t;
+    for (int x : v) t.push_back(x ? std::to_wstring(x) : L"Default");
+    return t;
+}
+int IndexOf(const std::vector<int>& v, int x) { for (size_t i = 0; i < v.size(); i++) if (v[i] == x) return (int)i; return 0; }
 }  // namespace
 
-const wchar_t* const* ScoreOptions(int* n) { *n = 8; return kScoreText; }
 int NumMods() { return kNumMods; }
 // Display names come from the game's map mod list (the names its HUD shows); the table above is the fallback.
 const wchar_t* ModName(int i) {
@@ -67,16 +77,16 @@ const wchar_t* ModName(int i) {
                         std::wstring n = ui::TextToString(e + 0x28);
                         if (!n.empty()) {   // "KING OF THE HILL" -> "King of the Hill"
                             bool start = true;
-                            for (auto& c : n) { c = start ? towupper(c) : towlower(c); start = c == L' '; }
+                            for (auto& c : n) { c = start ? towupper(c) : towlower(c); start = c == L' ' || c == L'-'; }
                             for (const wchar_t* w : { L" Of ", L" The ", L" On " }) {
                                 size_t p = n.find(w);
                                 if (p != std::wstring::npos) for (size_t q = p + 1; q < p + wcslen(w) - 1; q++) n[q] = towlower(n[q]);
                             }
+                            if (n == L"Vip") n = L"VIP";
                             names[j] = n;
                         }
                     }
             }
-            for (int j = 0; j < kNumMods; j++) Log("rules: map mod %ls = '%ls'", kModIds[j], names[j].c_str());
         }
     }
     return names[i].empty() ? kModNames[i] : names[i].c_str();
@@ -92,8 +102,51 @@ void SetModsCVar(const std::wstring& v) {
     FString* s = *(FString**)VA(A_ActiveModsCVarValue);
     if (s) uo::SetFString(*s, v);
 }
+
+// Writes the rules into the map's objective data. Every value is computed from the map's original value (kept per
+// object), so applying twice is harmless.
+namespace {
+std::map<uo::UObject*, std::pair<int, float>> gOrigPoints;   // points manager data -> (PointsRequiredToWin, CycleActiveTime)
+std::map<uo::UObject*, std::pair<bool, bool>> gOrigCycle;    // -> InfiniteCycle as designed
+std::map<uo::UObject*, float> gOrigCapture;                    // capture point data -> CaptureTime
+std::map<uo::UObject*, int> gOrigSeeds;                        // seed manager data -> SeedsRequired
+int ApplyTo(const std::vector<uo::UObject*>& points, const std::vector<uo::UObject*>& caps, const std::vector<uo::UObject*>& seeds, bool log) {
+    int n = 0;
+    for (uo::UObject* d : points) {
+        if (!gOrigPoints.count(d)) { gOrigPoints[d] = { F<int32_t>(d, PMD_PointsRequiredToWin), F<float>(d, PMD_CycleActiveTime) }; gOrigCycle[d] = { F<bool>(d, PMD_InfiniteCycle), true }; }
+        auto o = gOrigPoints[d];
+        F<int32_t>(d, PMD_PointsRequiredToWin) = gCur.cp > 0 ? gCur.cp : o.first;
+        float mul = kObjMul[gCur.objectives];
+        F<bool>(d, PMD_InfiniteCycle) = mul == 0.0f ? true : gOrigCycle[d].first;
+        F<float>(d, PMD_CycleActiveTime) = mul == 0.0f ? o.second : o.second * mul;
+        if (log) Log("rules: %ls points %d -> %d, rotation %.0f s -> %s%.0f s", uo::Name(d).c_str(), o.first, F<int32_t>(d, PMD_PointsRequiredToWin),
+                     o.second, F<bool>(d, PMD_InfiniteCycle) ? "never, " : "", F<float>(d, PMD_CycleActiveTime));
+        n++;
+    }
+    for (uo::UObject* d : caps) {
+        if (!gOrigCapture.count(d)) gOrigCapture[d] = F<float>(d, CPD_CaptureTime);
+        F<float>(d, CPD_CaptureTime) = gOrigCapture[d] * kCapMul[gCur.capture];
+        n++;
+    }
+    for (uo::UObject* d : seeds) {
+        if (!gOrigSeeds.count(d)) gOrigSeeds[d] = F<int32_t>(d, SMD_SeedsRequiredValue);
+        int orig = gOrigSeeds[d];
+        if (orig <= 0 || orig > 100000) continue;   // not the layout we know
+        F<int32_t>(d, SMD_SeedsRequiredValue) = gCur.pc > 0 ? gCur.pc : orig;
+        if (log) Log("rules: %ls cells %d -> %d", uo::Name(d).c_str(), orig, F<int32_t>(d, SMD_SeedsRequiredValue));
+        n++;
+    }
+    return n;
+}
+void ApplyNow(bool fullScan, bool log) {
+    auto find = [&](const wchar_t* c) { uo::UObject* cls = uo::FindClass(c); return fullScan ? uo::FindAllNow(cls) : uo::FindAll(cls); };
+    ApplyTo(find(L"MBCapturePointManagerData"), find(L"MBCapturePointData"), find(L"MBSeedManagerActorData"), log);
+}
+}  // namespace
+
 // The map mods manager reads the console variable only in offline play; custom games read it on every machine,
-// so host and members run the same modifiers in the deterministic simulation.
+// so host and members run the same modifiers in the deterministic simulation. The same moment (the match world is
+// loaded, nothing simulated yet) is when the objective rules are written.
 using WorldInitFn = void(__fastcall*)(void*, void*);
 WorldInitFn oModsWorldInit;
 void __fastcall hkModsWorldInit(void* mgr, void* worldRef) {
@@ -103,61 +156,66 @@ void __fastcall hkModsWorldInit(void* mgr, void* worldRef) {
         bool ok = Fn<bool(__fastcall*)(void*)>(A_ModsFromCVar)(mgr);
         Log("rules: map mods '%ls' -> %d", list.c_str(), ok);
     } else SetModsCVar(L"");
+    if (lobby::Active()) {
+        gOrigPoints.clear(); gOrigCycle.clear(); gOrigCapture.clear(); gOrigSeeds.clear();
+        ApplyNow(true, true);
+    }
     oModsWorldInit(mgr, worldRef);
 }
 void Install() {
     MH_CreateHook((void*)VA(A_ModsWorldInit), (void*)&hkModsWorldInit, (void**)&oModsWorldInit);
 }
+
 const wchar_t* const* ObjectiveOptions(int* n) { *n = 4; return kObjText; }
 const wchar_t* const* CaptureOptions(int* n) { *n = 3; return kCapText; }
 const wchar_t* const* TeamSizeOptions(int* n) { *n = 4; return kTeamText; }
+const wchar_t* const* ModModeOptions(int* n) { *n = 3; return kModModeText; }
+std::vector<std::wstring> CpScoreOptions() { return Texts(CpValues()); }
+std::vector<std::wstring> PcScoreOptions() { return Texts(PcValues()); }
+int CpIndex(int value) { return IndexOf(CpValues(), value); }
+int PcIndex(int value) { return IndexOf(PcValues(), value); }
+int CpValueAt(int i) { return i >= 0 && i < (int)CpValues().size() ? CpValues()[i] : 0; }
+int PcValueAt(int i) { return i >= 0 && i < (int)PcValues().size() ? PcValues()[i] : 0; }
 
 Values Current() { return gCur; }
 void Set(const Values& v) {
-    if (v.score != gCur.score || v.objectives != gCur.objectives || v.capture != gCur.capture || v.teamSize != gCur.teamSize || v.mods != gCur.mods)
-        Log("rules: score=%d objectives=%d capture=%d team=%d mods=%x", v.score, v.objectives, v.capture, v.teamSize, v.mods);
+    if (v.cp != gCur.cp || v.pc != gCur.pc || v.objectives != gCur.objectives || v.capture != gCur.capture || v.teamSize != gCur.teamSize || v.mods != gCur.mods)
+        Log("rules: points=%d cells=%d rotation=%d capture=%d team=%d mods=%x", v.cp, v.pc, v.objectives, v.capture, v.teamSize, v.mods);
     gCur = v;
 }
 std::string Encode() {
-    char b[96]; snprintf(b, sizeof b, "%d,%d,%d,%d,%u", gCur.score, gCur.objectives, gCur.capture, gCur.teamSize, gCur.mods);
+    char b[96]; snprintf(b, sizeof b, "%d,%d,%d,%d,%u,%d,%d", gCur.cp, gCur.objectives, gCur.capture, gCur.teamSize, gCur.mods, gCur.pc, gCur.modMode);
     return b;
 }
 Values Decode(const std::string& s) {
     Values v;
-    if (!s.empty()) sscanf(s.c_str(), "%d,%d,%d,%d,%u", &v.score, &v.objectives, &v.capture, &v.teamSize, &v.mods);
-    if (v.score < 0 || v.score > 7) v.score = kScoreDefault;
+    if (!s.empty()) sscanf(s.c_str(), "%d,%d,%d,%d,%u,%d,%d", &v.cp, &v.objectives, &v.capture, &v.teamSize, &v.mods, &v.pc, &v.modMode);
+    if (v.cp < 0 || v.cp > 100000) v.cp = 0;
+    if (v.pc < 0 || v.pc > 10000) v.pc = 0;
     v.mods &= (1u << kNumMods) - 1;
     if (v.objectives < 0 || v.objectives > 3) v.objectives = 0;
     if (v.capture < 0 || v.capture > 2) v.capture = 0;
     if (v.teamSize < 1 || v.teamSize > 4) v.teamSize = 4;
+    if (v.modMode < 0 || v.modMode > 2) v.modMode = v.mods ? 1 : 0;
     return v;
 }
 
-// Called every tick; applies the rules once per match world as soon as the objective data exists.
+// Safety net: the rules are written at world init; this re-applies them while the match world streams in (objective
+// data in streamed sub-levels appears later). Keyed by world, so a second match on the same map is covered too.
 void Tick() {
-    if (!lobby::Active() || !net::InNetGame()) { gAppliedWorld = nullptr; return; }
-    static DWORD last;
+    static void* world; static int passes; static DWORD last;
+    if (!lobby::Active() || !net::InNetGame()) { world = nullptr; return; }
     DWORD now = GetTickCount();
     if (now - last < 500) return;
     last = now;
-    std::wstring wn = net::WorldName();
-    static std::wstring appliedName;
-    static int passes;
-    if (wn != appliedName) { appliedName = wn; passes = 0; gOrigPoints.clear(); gOrigCapture.clear(); gOrigSeeds.clear(); }
-    if (passes > 20) return;   // keep re-checking for ~10 s while the level streams in
+    void* w = net::World();
+    if (w != world) {
+        world = w; passes = 0;
+        uo::Prewarm({ L"MBCapturePointManagerData", L"MBCapturePointData", L"MBSeedManagerActorData" });   // one pass for all three
+    }
+    if (passes > 20) return;
     passes++;
-    for (uo::UObject* d : uo::FindAll(uo::FindClass(L"MBCapturePointManagerData"))) {
-        if (!gOrigPoints.count(d)) gOrigPoints[d] = { F<int32_t>(d, PMD_PointsRequiredToWin), F<float>(d, PMD_CycleActiveTime) };
-        auto o = gOrigPoints[d];
-        F<int32_t>(d, PMD_PointsRequiredToWin) = std::max(1, (int)(o.first * kScoreMul[gCur.score] + 0.5f));
-        if (kObjMul[gCur.objectives] == 0.0f) F<bool>(d, PMD_InfiniteCycle) = true;
-        else F<float>(d, PMD_CycleActiveTime) = o.second * kObjMul[gCur.objectives];
-        if (passes == 1) Log("rules: %ls points %d -> %d, cycle %.0f", uo::Name(d).c_str(), o.first, F<int32_t>(d, PMD_PointsRequiredToWin), F<float>(d, PMD_CycleActiveTime));
-    }
-    for (uo::UObject* d : uo::FindAll(uo::FindClass(L"MBCapturePointData"))) {
-        if (!gOrigCapture.count(d)) gOrigCapture[d] = F<float>(d, CPD_CaptureTime);
-        F<float>(d, CPD_CaptureTime) = gOrigCapture[d] * kCapMul[gCur.capture];
-    }
+    ApplyNow(false, passes == 1 || passes == 20);
 }
 
 void ApplyOnMapLoad() {}

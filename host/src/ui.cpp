@@ -17,9 +17,12 @@ struct FFrame { void* vt; uint8_t pad[8]; uo::UObject* Node; uo::UObject* Object
 using NativeFn = void(__fastcall*)(uo::UObject*, FFrame*, void*);
 struct EventHook { std::wstring cls, fn; uo::UObject* func; std::function<bool(uo::UObject*, void*)> h; };
 std::vector<EventHook> gHooks;
+bool gOfficialQueue;   // let the next Custom Queue press reach the game
 struct Patched { uo::UObject* func; NativeFn orig; size_t hook; };
 std::vector<Patched> gPatched;   // every UFunction we ever redirected (old copies may still run during map changes)
 
+// Only for functions that run through ProcessEvent (Blueprint events and functions, RPCs). A native function called
+// directly from Blueprint script runs on its caller's frame (Node is the caller), so it must be hooked natively.
 void __fastcall FuncThunk(uo::UObject* ctx, FFrame* st, void* res) {
     for (auto& p : gPatched) {
         if (p.func != st->Node) continue;
@@ -85,16 +88,22 @@ uo::UObject* TopScreen() {
 void RelabelMenu() {
     uo::UObject* tb = uo::FindClass(L"TextBlock");
     if (!tb) return;
-    for (const wchar_t* n : { L"CustomQueueText", L"TextBlock_0" }) {
-        uo::UObject* w = WidgetNamed(tb, L"FE_BillboardMainMenu_C", n);
-        if (w && GetText(w) == L"CUSTOM QUEUE") SetText(w, L"CUSTOM GAME");
+    // The billboard's text blocks are looked up once (a search walks every text block in the game) and re-checked
+    // cheaply afterwards; the billboard is rebuilt when the main menu loads again.
+    static uo::UObject* found[3];
+    static DWORD lastSearch;
+    const wchar_t* names[3] = { L"CustomQueueText", L"TextBlock_0", L"LeaderboardsText" };
+    bool stale = false;
+    for (auto* f : found) if (!f || !uo::IsLive(f)) stale = true;
+    if (stale && GetTickCount() - lastSearch > 5000) {
+        lastSearch = GetTickCount();
+        for (int i = 0; i < 3; i++)
+            if (!found[i] || !uo::IsLive(found[i])) found[i] = WidgetNamed(tb, L"FE_BillboardMainMenu_C", names[i]);
     }
-    // When an update was postponed, the billboard's "Leaderboards" line (dead without the official servers)
-    // becomes "Update".
-    if (update::Available() && update::Postponed()) {
-        uo::UObject* t = WidgetNamed(tb, L"FE_BillboardMainMenu_C", L"LeaderboardsText");
-        if (t && GetText(t) != L"Update") SetText(t, L"Update");
-    }
+    for (int i = 0; i < 2; i++)
+        if (found[i] && GetText(found[i]) == L"CUSTOM QUEUE") SetText(found[i], L"CUSTOM GAMES");
+    // When an update was postponed, the billboard's "Leaderboards" line becomes "Update".
+    if (update::Available() && update::Postponed() && found[2] && GetText(found[2]) != L"Update") SetText(found[2], L"Update");
 }
 }  // namespace
 
@@ -118,7 +127,9 @@ namespace {
 struct Prompt {
     std::wstring body, yes, no; std::vector<std::wstring> rows; std::function<void(int)> cb;
     uo::UObject* screen; DWORD shownAt; bool labelled; int choice; std::vector<uo::UObject*> rowWidgets; int focusPending = 0; int focused = -1;
+    int id = 0;
 };
+int gNextPromptId = 1;
 std::vector<Prompt> gPrompts;   // front = showing
 constexpr size_t SMS_MessageResult = 0x450;
 constexpr size_t PLB_ButtonTextProp = 0x4e0;
@@ -149,6 +160,22 @@ bool ShowPromptNow(Prompt& p) {
     return true;
 }
 
+// One list row: the pause menu's button, centred.
+uo::UObject* MakeRow(uo::UObject* box, const std::wstring& text) {
+    uo::UObject* rowCls = uo::FindClass(L"PromptListButtonTemplate_C");
+    uo::UObject* lib = uo::FindFirst(uo::FindClass(L"WidgetBlueprintLibrary"), true);
+    if (!rowCls || !lib) return nullptr;
+    uo::Call c(lib, L"Create");
+    c.set<uo::UObject*>(L"WorldContextObject", (uo::UObject*)net::World()).set<uo::UObject*>(L"WidgetType", rowCls).set<uo::UObject*>(L"OwningPlayer", nullptr).run();
+    uo::UObject* w = c.get<uo::UObject*>(L"ReturnValue");
+    if (!w) return nullptr;
+    uo::MakeText((uo::FText*)(w + PLB_ButtonTextProp), text.c_str());
+    F<int32_t>(w, 0x760) = 20;     // TextSize, as the pause menu's list
+    uo::Call add(box, L"AddChild");
+    uo::UObject* slot = add.set<uo::UObject*>(L"Content", w).run().get<uo::UObject*>(L"ReturnValue");
+    if (slot) uo::Call(slot, L"SetHorizontalAlignment").set<uint8_t>(L"InHorizontalAlignment", 2).run();   // centred
+    return w;
+}
 // Adds the list rows between the message and the buttons.
 void AddRows(Prompt& p) {
     uo::UObject* box = Child(p.screen, L"VerticalBox", L"VerticalBox_2");
@@ -158,18 +185,7 @@ void AddRows(Prompt& p) {
     if (!box || !buttons || !rowCls || !lib) { Log("ui: list layout not found"); return; }
     if (p.body.empty()) if (uo::UObject* tb = Child(p.screen, L"Border", L"TextBorder")) uo::Call(tb, L"SetVisibility").set<uint8_t>(L"InVisibility", 1).run();
     uo::Call(box, L"RemoveChild").set<uo::UObject*>(L"Content", buttons).run();
-    for (auto& r : p.rows) {
-        uo::Call c(lib, L"Create");
-        c.set<uo::UObject*>(L"WorldContextObject", (uo::UObject*)net::World()).set<uo::UObject*>(L"WidgetType", rowCls).set<uo::UObject*>(L"OwningPlayer", nullptr).run();
-        uo::UObject* w = c.get<uo::UObject*>(L"ReturnValue");
-        if (!w) continue;
-        uo::MakeText((uo::FText*)(w + PLB_ButtonTextProp), r.c_str());
-        F<int32_t>(w, 0x760) = 20;     // TextSize, as the pause menu's list
-        uo::Call add(box, L"AddChild");
-        uo::UObject* slot = add.set<uo::UObject*>(L"Content", w).run().get<uo::UObject*>(L"ReturnValue");
-        if (slot) uo::Call(slot, L"SetHorizontalAlignment").set<uint8_t>(L"InHorizontalAlignment", 2).run();   // centred
-        p.rowWidgets.push_back(w);
-    }
+    for (auto& r : p.rows) if (uo::UObject* w = MakeRow(box, r)) p.rowWidgets.push_back(w);
     // A list without bottom buttons looks like the pause menu; Escape / B closes it.
     if (!p.yes.empty() || !p.no.empty()) uo::Call(box, L"AddChild").set<uo::UObject*>(L"Content", buttons).run();
     p.focusPending = 2;
@@ -245,12 +261,49 @@ bool OnRowPressed(uo::UObject* btn) {
 }
 }  // namespace
 
+void OpenOfficialCustomQueue() {
+    uo::UObject* m = uo::FindTransient(uo::FindClass(L"FE_MainMenuScreen_C"));
+    if (!m) return;
+    gOfficialQueue = true;
+    uo::Call(m, L"OnCustomQueuePressed").run();
+    gOfficialQueue = false;
+}
 void Ask(const std::wstring& body, const std::wstring& yes, const std::wstring& no, std::function<void(bool)> cb) {
     gPrompts.push_back(Prompt{ body, yes, no, {}, [cb](int c) { if (cb) cb(c == kYes); }, nullptr, 0, false, kNo, {} });
 }
-void List(const std::wstring& body, const std::vector<std::wstring>& rows, const std::wstring& yes, const std::wstring& no, std::function<void(int)> cb) {
-    gPrompts.push_back(Prompt{ body, yes, no, rows, cb, nullptr, 0, false, kNo, {} });
+int List(const std::wstring& body, const std::vector<std::wstring>& rows, const std::wstring& yes, const std::wstring& no, std::function<void(int)> cb) {
+    Prompt p{ body, yes, no, rows, cb, nullptr, 0, false, kNo, {} };
+    p.id = gNextPromptId++;
+    gPrompts.push_back(p);
+    return p.id;
 }
+// Replaces the rows of a list that is still showing (or still waiting to show) without closing it.
+bool UpdateList(int id, const std::vector<std::wstring>& rows) {
+    for (auto& p : gPrompts) {
+        if (p.id != id) continue;
+        if (p.rowWidgets.empty() || !p.screen) { p.rows = rows; return true; }   // rows not built yet
+        uo::UObject* box = Child(p.screen, L"VerticalBox", L"VerticalBox_2");
+        if (!box) return false;
+        for (size_t i = 0; i < rows.size(); i++) {
+            if (i < p.rowWidgets.size() && uo::IsLive(p.rowWidgets[i])) {
+                if (i < p.rows.size() && p.rows[i] == rows[i]) continue;
+                uo::UObject* w = p.rowWidgets[i];
+                uo::MakeText((uo::FText*)(w + PLB_ButtonTextProp), rows[i].c_str());
+                if (uo::UObject* tb = F<uo::UObject*>(w, 0x4b0)) SetText(tb, rows[i].c_str());
+            } else if (uo::UObject* w = MakeRow(box, rows[i])) {
+                if (i < p.rowWidgets.size()) p.rowWidgets[i] = w; else p.rowWidgets.push_back(w);
+            }
+        }
+        while (p.rowWidgets.size() > rows.size()) {
+            if (uo::IsLive(p.rowWidgets.back())) uo::Call(p.rowWidgets.back(), L"RemoveFromParent").run();
+            p.rowWidgets.pop_back();
+        }
+        p.rows = rows;
+        return true;
+    }
+    return false;
+}
+bool ListOpen(int id) { for (auto& p : gPrompts) if (p.id == id) return true; return false; }
 bool PromptOpen() { return !gPrompts.empty(); }
 
 std::wstring TextToString(const void* ftext) {
@@ -284,6 +337,18 @@ void Tick(float dt) {
     if (!net::MenuSettled()) return;
     ResolveHooks();
     RelabelMenu();
+    // Index the classes the lobby screens use while the main menu is idle, so opening them doesn't stall.
+    static void* warmedFor;
+    if (warmedFor != net::World() && MainMenuReady()) {
+        warmedFor = net::World();
+        LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
+        uo::Prewarm({ L"MBCustomGameManager", L"CustomGameScreen_C", L"MBFECustomGameMenu", L"MBFECustomGameTeamSlotButton",
+                      L"PromptListButtonTemplate_C", L"VerticalBox", L"TextBlock", L"Widget", L"FE_EditButton_C",
+                      L"Widget_ShifterOption_C", L"DefaultYesNoSystemMessageScreen_C", L"SizeBox", L"Border", L"ButtonTemplate_C",
+                      L"MBFrontEnd", L"MBGameInstance", L"MBMapModsManager" });
+        QueryPerformanceCounter(&b);
+        Log("ui: lobby classes indexed in %.1f ms", (b.QuadPart - a.QuadPart) * 1000.0 / f.QuadPart);
+    }
 }
 
 // Prompts tick faster so list rows appear right after the banner opens.
@@ -298,7 +363,8 @@ void FastTick() {
 void DevCommand(const char* cmd) {
     if (!strcmp(cmd, "ask")) Ask(L"Test prompt body.", L"UPDATE", L"LATER", [](bool y) { Log("ui: dev prompt answered %d", y); });
     if (!strcmp(cmd, "msg")) ShowMessage(L"", L"Test message.");
-    if (!strcmp(cmd, "addrow")) settings::DevAddRow();
+    int row = 0, idx = 0;
+    if (sscanf(cmd, "setrow %d %d", &row, &idx) == 2) settings::DevSetRow(row, idx);
     // Simulated clicks (the same UFunction calls a real button press makes).
     char arg[128] = {}; int team = 0;
     if (sscanf(cmd, "press %127s", arg) == 1) {
@@ -313,15 +379,50 @@ void DevCommand(const char* cmd) {
         }
     }
     if (sscanf(cmd, "slot %d %127s", &team, arg) == 2) {
-        for (uo::UObject* b : uo::FindAll(uo::FindClass(L"CustomGame_PlayerSlot_Queue_C"))) {
+        for (uo::UObject* b : uo::FindAll(uo::FindClass(L"MBFECustomGameTeamSlotButton"))) {
+            uo::Call vis(b, L"GetParent");
+            if (!vis.ok() || !vis.run().get<uo::UObject*>(L"ReturnValue")) continue;
             bool occ = F<bool>(b, 0x4a8), loc = F<bool>(b, 0x4aa);
             if (F<int32_t>(b, 0x480) != team) continue;
             if ((!strcmp(arg, "local") && loc) || (!strcmp(arg, "empty") && !occ) || (!strcmp(arg, "other") && occ && !loc)) {
                 Log("ui: dev slot %d %s", team, arg);
-                uo::Call(b, L"OnPressed_Event").run();
+                uo::Call(b, L"Pressed").run();
                 break;
             }
         }
+    }
+    char c1[128] = {}, c2[160] = {};
+    if (sscanf(cmd, "params %127s %159s", c1, c2) == 2) {
+        uo::UObject* f = uo::FindFunction(uo::FindClass(Utf8ToWide(c1).c_str()), Utf8ToWide(c2).c_str(), true);
+        Log("ui: params of %s.%s (%p) size=%d", c1, c2, f, f ? F<uint16_t>(f, uo::Func_ParmsSize) : 0);
+        for (uo::UObject* p = f ? F<uo::UObject*>(f, uo::Struct_Children) : nullptr; p; p = F<uo::UObject*>(p, uo::Field_Next))
+            Log("ui:   %ls %ls @%d", uo::Name(uo::ClassOf(p)).c_str(), uo::Name(p).c_str(), F<int32_t>(p, uo::Prop_Offset));
+    }
+    // Text chat through the game's own SendChat (channel 0 = all), as the chat box does.
+    if (!strncmp(cmd, "chat ", 5)) {
+        for (uo::UObject* pc : uo::FindAll(uo::FindClass(L"MBPlayerController"))) {
+            uo::Call loc(pc, L"IsLocalController");
+            if (!loc.ok() || !loc.run().get<bool>(L"ReturnValue")) continue;
+            uo::FText t; uo::MakeText(&t, Utf8ToWide(cmd + 5).c_str());
+            uo::Call(pc, L"SendChat").str(L"Target", L"").set<uint8_t>(L"Channel", (uint8_t)0 /* team, as the chat box */).set(L"ChatValue", t).run();
+            Log("ui: dev chat sent");
+            break;
+        }
+    }
+    // Raw bytes of the first live object of a class: "dump <Class> <hex offset> <len>".
+    unsigned off = 0, len = 0;
+    if (sscanf(cmd, "dump %127s %x %u", c1, &off, &len) == 3) {
+        uo::UObject* o = uo::FindFirst(uo::FindClass(Utf8ToWide(c1).c_str()));
+        for (unsigned i = 0; o && i < len && i < 512; i += 16) {
+            char line[128] = {}; size_t n = 0;
+            for (unsigned j = 0; j < 16 && i + j < len; j++) n += snprintf(line + n, sizeof line - n, "%02x ", o[off + i + j]);
+            Log("ui: dump %s+%x: %s", c1, off + i, line);
+        }
+    }
+    int pick = -1;
+    if (sscanf(cmd, "pick %d", &pick) == 1 && !gPrompts.empty() && pick >= 0 && pick < (int)gPrompts.front().rowWidgets.size()) {
+        Log("ui: dev pick %d", pick);
+        OnRowPressed(gPrompts.front().rowWidgets[pick]);
     }
     if (!strcmp(cmd, "hooks"))
         for (auto& h : gHooks)
@@ -332,8 +433,10 @@ void DevCommand(const char* cmd) {
 
 void Install() {
     // Main menu: "Custom Queue" (the dead official password queue) becomes our Custom Game entry.
+    // The official queue stays one row away in the browser (OpenOfficialCustomQueue lets this event through once).
     OnEvent(L"FE_MainMenuScreen_C", L"OnCustomQueuePressed", [](uo::UObject*, void*) {
-        Log("ui: Custom Game pressed");
+        if (gOfficialQueue) { gOfficialQueue = false; Log("ui: official Custom Queue"); return false; }
+        Log("ui: Custom Games pressed");
         if (lobby::Active()) lobby::ShowScreen(); else lobby::OpenBrowser();
         return true;
     });
@@ -343,8 +446,12 @@ void Install() {
     // Lobby screen BACK / Escape: return to the main menu but stay in the lobby (LEAVE leaves).
     OnEvent(L"CustomGameScreen_C", L"BndEvt__FE_CustomGameMenu_K2Node_ComponentBoundEvent_55_OnLeaveGamePressed__DelegateSignature",
             [](uo::UObject*, void*) { return lobby::OnBackPressed(); });
-    // Team slots: click to switch teams with a mouse.
-    OnEvent(L"CustomGame_PlayerSlot_Queue_C", L"OnPressed_Event", [](uo::UObject* slot, void*) { return lobby::OnSlotPressed(slot); });
+    // Team slots: click to switch teams with a mouse. A real click/accept runs "Pressed" (which would open the dead
+    // Xbox invite list for an empty slot); "OnPressed_Event" is the button's own event.
+    for (const wchar_t* c : { L"CustomGame_PlayerSlot_Team_C", L"CustomGame_PlayerSlot_Spectator_C", L"CustomGame_PlayerSlot_Queue_C" }) {
+        OnEvent(c, L"Pressed", [](uo::UObject* slot, void*) { return lobby::OnSlotPressed(slot); });
+        OnEvent(c, L"OnPressed_Event", [](uo::UObject* slot, void*) { return lobby::OnSlotPressed(slot); });
+    }
     OnEvent(L"FE_MainMenuScreen_C", L"OnLeaderboardButtonPressed", [](uo::UObject*, void*) {
         if (!update::Available()) return false;
         update::Begin();
@@ -353,6 +460,11 @@ void Install() {
     // Lobby INVITE: Steam's own invite dialog (friends list with Invite buttons) instead of the dead Xbox one.
     OnEvent(L"CustomGameScreen_C", L"BndEvt__FE_CustomGameMenu_K2Node_ComponentBoundEvent_2_OnInviteFriendPressed__DelegateSignature",
             [](uo::UObject*, void*) { lobby::OpenInvite(); return true; });
+    // Diagnostics: every chat line that reaches this player (logged without its text).
+    OnEvent(L"MBPlayerController", L"ClientReceiveChat", [](uo::UObject*, void* parms) {
+        Log("chat: received a message");
+        return false;
+    });
     Log("ui: installed");
 }
 }  // namespace ui
