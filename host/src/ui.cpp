@@ -76,12 +76,9 @@ uo::UObject* TopScreen() {
 void RelabelMenu() {
     uo::UObject* tb = uo::FindClass(L"TextBlock");
     if (!tb) return;
-    static int dbg;
     for (const wchar_t* n : { L"CustomQueueText", L"TextBlock_0" }) {
         uo::UObject* w = WidgetNamed(tb, L"FE_BillboardMainMenu_C", n);
-        std::wstring cur = w ? GetText(w) : L"<none>";
-        if (dbg < 4) { dbg++; Log("ui: relabel %ls -> %p '%ls'", n, w, cur.c_str()); }
-        if (w && cur == L"CUSTOM QUEUE") SetText(w, L"CUSTOM GAME");
+        if (w && GetText(w) == L"CUSTOM QUEUE") SetText(w, L"CUSTOM GAME");
     }
     // When an update was postponed, the billboard's unused "Report a Bug" line becomes "Update".
     if (update::Available() && update::Postponed()) {

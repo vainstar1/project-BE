@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 #include <cstdio>
+#include <algorithm>
 #include "uobj.h"
 #include "mod.h"
 
@@ -60,8 +61,6 @@ Values Decode(const std::string& s) {
 // Called every tick; applies the rules once per match world as soon as the objective data exists.
 void Tick() {
     if (!lobby::Active() || !net::InNetGame()) { gAppliedWorld = nullptr; return; }
-    uo::UObject* world = nullptr;
-    if (uo::UObject* gi = uo::FindTransient(uo::FindClass(L"MBGameInstance"))) (void)gi;
     static DWORD last;
     DWORD now = GetTickCount();
     if (now - last < 500) return;
@@ -72,7 +71,6 @@ void Tick() {
     if (wn != appliedName) { appliedName = wn; passes = 0; gOrigPoints.clear(); gOrigCapture.clear(); gOrigSeeds.clear(); }
     if (passes > 20) return;   // keep re-checking for ~10 s while the level streams in
     passes++;
-    (void)world;
     for (uo::UObject* d : uo::FindAll(uo::FindClass(L"MBCapturePointManagerData"))) {
         if (!gOrigPoints.count(d)) gOrigPoints[d] = { F<int32_t>(d, PMD_PointsRequiredToWin), F<float>(d, PMD_CycleActiveTime) };
         auto o = gOrigPoints[d];

@@ -309,11 +309,11 @@ void WriteMembers(uo::UObject* m, const std::vector<std::pair<uint64_t, int>>& m
     auto& list = F<TArray<Member>>(m, CGM_MemberList);
     if (list.Max < (int)members.size() || !list.Data) {
         Member* d = (Member*)uo::Malloc(sizeof(Member) * 16);
-        memset(d, 0, sizeof(Member) * 16);
+        memset((void*)d, 0, sizeof(Member) * 16);
         for (int i = 0; i < list.Num && i < 16; i++) d[i] = list.Data[i];
         list.Data = d; list.Max = 16;
     }
-    for (int i = list.Num; i < (int)members.size(); i++) memset(&list.Data[i], 0, sizeof(Member));
+    for (int i = list.Num; i < (int)members.size(); i++) memset((void*)&list.Data[i], 0, sizeof(Member));
     list.Num = (int)members.size();
     uint64_t me = gB->Me();
     for (size_t i = 0; i < members.size(); i++) {
@@ -660,7 +660,6 @@ void __fastcall hkExecLeaveGame(void* ctx, FFrameHead* st, void* res) {
 
 void Hook(uintptr_t va, void* det, void** orig, const char* name) {
     if (MH_CreateHook((void*)VA(va), det, orig) != MH_OK) Log("lobby: hook %s failed", name);
-    else Log("lobby: hook %s tramp=%p", name, *orig);
 }
 }  // namespace
 
@@ -838,4 +837,5 @@ void LobbyDevCommand(const char* cmd) {
     else if (sscanf(cmd, "join %llu", &id) == 1) lobby::JoinById(id);
     else if (!strcmp(cmd, "start")) { if (uo::UObject* m = Mgr()) hkCustomStart(m); }
     else if (!strcmp(cmd, "status")) Log("lobby: %ls", lobby::StatusLine().c_str());
+    else if (!strcmp(cmd, "tomenu")) net::Travel(L"/Game/Levels/FrontEnd/Map_FrontEnd_3D");
 }
