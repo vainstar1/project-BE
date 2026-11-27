@@ -5,7 +5,7 @@
 #include <functional>
 #include <vector>
 
-#define BE1V1_VERSION "2.3.0"
+#define BE1V1_VERSION "2.3.1"
 #define BE1V1_PROTOCOL "4"     // lobbies only list/accept peers with the same protocol (4: 3-4 teams)
 
 namespace net {

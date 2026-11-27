@@ -108,13 +108,19 @@ uo::UObject* Texture(uint64_t memberId) {
     return e.tex;
 }
 
-// Puts a texture on an Image widget (no change when it already shows it).
+// Puts a texture on an Image widget, once: setting a brush again on every refresh got slower each time (1 fps on
+// the lobby screen in v2.3.0). The image's current brush resource is read through reflection.
 void Show(uo::UObject* image, uo::UObject* tex) {
     if (!image || !tex) return;
-    static int brushOff = -2;
+    static int brushOff = -2, resOff = -2;
     if (brushOff == -2) brushOff = uo::PropOffset(uo::FindClass(L"Image"), L"Brush");
-    // FSlateBrush: ResourceObject at +0x48 in 4.20 (ImageSize, Margin, TintColor come first)
-    if (brushOff >= 0 && F<uo::UObject*>(image, brushOff + 0x48) == tex) return;
+    if (resOff == -2) resOff = uo::PropOffset(uo::FindObjectPath(L"/Script/SlateCore.SlateBrush"), L"ResourceObject");
+    static std::map<uo::UObject*, uo::UObject*> shown;   // image -> texture we put on it
+    auto it = shown.find(image);
+    bool current = brushOff >= 0 && resOff >= 0 ? F<uo::UObject*>(image, brushOff + resOff) == tex : it != shown.end() && it->second == tex;
+    if (current) return;
+    if (shown.size() > 256) shown.clear();
+    shown[image] = tex;
     uo::Call(image, L"SetBrushFromTexture").set<uo::UObject*>(L"Texture", tex).set<bool>(L"bMatchSize", false).run();
 }
 }  // namespace avatars

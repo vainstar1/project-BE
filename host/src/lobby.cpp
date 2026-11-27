@@ -642,15 +642,10 @@ uo::UObject* Named(uo::UObject* userWidget, const wchar_t* name) {
     if (!userWidget) return nullptr;
     int off = uo::PropOffset(uo::ClassOf(userWidget), name);
     if (off >= 0) return F<uo::UObject*>(userWidget, off);
-    static std::map<std::pair<uo::UObject*, std::wstring>, uo::UObject*> cache;
-    auto key = std::make_pair(userWidget, std::wstring(name));
-    auto it = cache.find(key);
-    if (it != cache.end() && uo::IsLive(it->second) && uo::OuterOf(uo::OuterOf(it->second)) == userWidget) return it->second;
-    if (cache.size() > 2000) cache.clear();
-    FName want = uo::MakeName(name);
-    for (uo::UObject* w : uo::FindAll(uo::FindClass(L"Widget")))
-        if (uo::NameIs(w, want) && uo::OuterOf(w) && uo::OuterOf(uo::OuterOf(w)) == userWidget) return cache[key] = w;
-    return nullptr;
+    // The engine's own lookup in the widget's tree (searching all widgets instead froze the lobby screen in v2.3.0).
+    uo::Call c(userWidget, L"GetWidgetFromName");
+    if (!c.ok()) return nullptr;
+    return c.set<FName>(L"Name", uo::MakeName(name)).run().get<uo::UObject*>(L"ReturnValue");
 }
 uo::UObject* SlotOf(uo::UObject* w) {
     static int off = -2;
@@ -891,12 +886,28 @@ void LabelScreen() {
                 break;
             }
     }
+    static uo::UObject* queueCls;
+    if (!queueCls || !uo::IsLive(queueCls)) queueCls = uo::FindClass(L"CustomGame_PlayerSlot_Queue_C");
     for (uo::UObject* s : uo::FindAllTransient(uo::FindClass(L"MBFECustomGameTeamSlotButton"))) {
+        // The official queue's slots (never shown in custom games) have none of the texts or pictures below:
+        // looking for them searched every widget, for every slot, on every refresh.
+        if (queueCls && uo::ClassOf(s) == queueCls) continue;
         // Occupied places show the player's Steam profile picture (the game asked Xbox Live, which is gone).
         if (F<bool>(s, Slot_Occupied)) {
+            // (team slots only: the hidden queue slots have no picture)
+            static int iconOff = -2, icon1Off = -2;
+            static uo::UObject* teamSlotCls;
+            if (!teamSlotCls || !uo::IsLive(teamSlotCls)) {
+                teamSlotCls = uo::FindClass(L"CustomGame_PlayerSlot_Team_C");
+                iconOff = teamSlotCls ? uo::PropOffset(teamSlotCls, L"Icon") : -1;
+                icon1Off = teamSlotCls ? uo::PropOffset(teamSlotCls, L"Icon1") : -1;
+            }
+            if (!teamSlotCls || uo::ClassOf(s) != teamSlotCls || iconOff < 0) continue;
             uint64_t id = SlotMember(s);
-            if (uo::UObject* tex = id ? avatars::Texture(id) : nullptr)
-                for (const wchar_t* n : { L"Icon", L"Icon1" }) avatars::Show(Named(s, n), tex);
+            if (uo::UObject* tex = id ? avatars::Texture(id) : nullptr) {
+                avatars::Show(F<uo::UObject*>(s, iconOff), tex);
+                if (icon1Off >= 0) avatars::Show(F<uo::UObject*>(s, icon1Off), tex);
+            }
             continue;
         }
         uo::Call par(s, L"GetParent");

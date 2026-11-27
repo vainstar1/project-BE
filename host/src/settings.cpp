@@ -89,7 +89,7 @@ void SetVisible(uo::UObject* w, bool on) {
     if (!Live(w)) return;
     uo::Call(w, L"SetVisibility").set<uint8_t>(L"InVisibility", on ? 0 : 1).run();
 }
-// The team count decides which score rows apply, and how Team Size reads ("2v2" / "2v2v2" / "2v2v2v2").
+// The team count and the scoring decide which score rows apply.
 void ShowTeamRows(int teams, int koOnly) {
     if (koOnly == gScoringShown && teams == gTeamsShown) return;
     if (koOnly != gScoringShown || (teams > 2) != (gTeamsShown > 2)) {
@@ -100,14 +100,6 @@ void ShowTeamRows(int teams, int koOnly) {
     gScoringShown = koOnly;
     if (teams == gTeamsShown) return;
     gTeamsShown = teams;
-    uo::UObject* row = gRows[RTeam];
-    if (Live(row)) {
-        auto labels = rules::TeamSizeLabels(teams);
-        auto& arr = F<TArray<uo::FText>>(row, OW_TextOptions);
-        for (int i = 0; i < arr.Num && i < (int)labels.size(); i++) uo::MakeText(&arr.Data[i], labels[i].c_str());
-        uo::Call(row, L"InitialiseWidget").set<int32_t>(L"InitialIndex", IndexOf(row)).run();   // redraws the shown value
-        uo::Call(row, L"UpdateWidget").run();
-    }
 }
 
 void Decorate(uo::UObject* spectators) {
@@ -127,7 +119,7 @@ void Decorate(uo::UObject* spectators) {
     int n;
     const wchar_t* const* o;
     gRows[RTeams] = MakeRow(box, cls, L"Teams", rules::TeamCountOptions(), v.teams - 2);
-    gRows[RTeam] = MakeRow(box, cls, L"Team Size", rules::TeamSizeLabels(v.teams), v.teamSize - 1);
+    gRows[RTeam] = MakeRow(box, cls, L"Team Size", { L"1 Player", L"2 Players", L"3 Players", L"4 Players" }, v.teamSize - 1);
     gRows[RScoring] = MakeRow(box, cls, L"Scoring", rules::ScoringOptions(), v.koOnly);
     gRows[RKos] = MakeRow(box, cls, L"KOs to Win", rules::KoOptions(), rules::KoIndex(v.kos));
     gRows[RCp] = MakeRow(box, cls, L"Points to Win", rules::CpScoreOptions(), rules::CpIndex(v.cp));
