@@ -45,4 +45,5 @@ std::vector<Friend> Friends();
 void OnJoinRequested(std::function<void(uint64_t lobby)> cb);
 
 void Tick();   // completes async calls
+bool AvatarRGBA(uint64_t id, std::vector<uint8_t>& rgba, int& w, int& h);   // false until Steam has it
 }  // namespace steam

@@ -3,8 +3,9 @@
 // look and behave exactly like the rows Ninja Theory placed there.
 //
 // Panel (host):  Privacy, Lock Teams, Spectators (the game's rows), then
-//   Team Size, Points to Win (Objective Control), Cells to Win (Power Collection), Objective Rotation, Capture Speed,
-//   Map Mods (Off / Choose / All) and, only while "Choose" is selected, one on/off row per modifier.
+//   Teams (2-4), Team Size, KOs to Win (3-4 teams), Points to Win (Objective Control), Cells to Win (Power
+//   Collection), Objective Rotation, Capture Speed, Map Mods (Off / Choose / All) and, only while "Choose" is
+//   selected, one on/off row per modifier. With 3-4 teams (Team Brawl: knockouts only) the objective rows are hidden.
 #include <windows.h>
 #include <vector>
 #include <string>
@@ -15,13 +16,15 @@ namespace settings {
 namespace {
 // MBOptionWidget fields
 constexpr size_t OW_OptionName = 0x330, OW_IsTextValue = 0x361, OW_TextOptions = 0x368, OW_Min = 0x3a0, OW_Max = 0x3a4, OW_Index = 0x3b0;
-enum Row { RTeam, RCp, RPc, RRotation, RCapture, RMods, NumRows };
+enum Row { RTeams, RTeam, RScoring, RKos, RCp, RPc, RRotation, RCapture, RMods, NumRows };
 
 uo::UObject* gBox;                 // the settings scroll box we decorated
 uo::UObject* gSpecRow;             // the game's own Spectators row
 uo::UObject* gRows[NumRows];
 uo::UObject* gModRows[32];         // one tick box per map modifier
 int gModModeShown = -1;            // mod rows visibility we last applied
+int gTeamsShown = -1;              // team count the rows were last laid out for
+int gScoringShown = -1;            // scoring mode the rows were last laid out for
 
 bool OnScreen(uo::UObject* w) { uo::Call c(w, L"GetParent"); return c.ok() && c.run().get<uo::UObject*>(L"ReturnValue"); }
 bool Live(uo::UObject* w) { return w && uo::IsLive(w); }
@@ -82,6 +85,31 @@ void ShowModRows(int mode) {
         if (Live(gModRows[i])) uo::Call(gModRows[i], L"SetVisibility").set<uint8_t>(L"InVisibility", mode == 1 ? 0 : 1).run();
 }
 
+void SetVisible(uo::UObject* w, bool on) {
+    if (!Live(w)) return;
+    uo::Call(w, L"SetVisibility").set<uint8_t>(L"InVisibility", on ? 0 : 1).run();
+}
+// The team count decides which score rows apply, and how Team Size reads ("2v2" / "2v2v2" / "2v2v2v2").
+void ShowTeamRows(int teams, int koOnly) {
+    if (koOnly == gScoringShown && teams == gTeamsShown) return;
+    if (koOnly != gScoringShown || (teams > 2) != (gTeamsShown > 2)) {
+        SetVisible(gRows[RKos], koOnly != 0);
+        for (Row r : { RCp, RRotation, RCapture }) SetVisible(gRows[r], !koOnly);
+        SetVisible(gRows[RPc], !koOnly && teams <= 2);   // 3-4 teams play Objective Control (no cells)
+    }
+    gScoringShown = koOnly;
+    if (teams == gTeamsShown) return;
+    gTeamsShown = teams;
+    uo::UObject* row = gRows[RTeam];
+    if (Live(row)) {
+        auto labels = rules::TeamSizeLabels(teams);
+        auto& arr = F<TArray<uo::FText>>(row, OW_TextOptions);
+        for (int i = 0; i < arr.Num && i < (int)labels.size(); i++) uo::MakeText(&arr.Data[i], labels[i].c_str());
+        uo::Call(row, L"InitialiseWidget").set<int32_t>(L"InitialIndex", IndexOf(row)).run();   // redraws the shown value
+        uo::Call(row, L"UpdateWidget").run();
+    }
+}
+
 void Decorate(uo::UObject* spectators) {
     uo::Call p(spectators, L"GetParent");
     uo::UObject* box = p.run().get<uo::UObject*>(L"ReturnValue");
@@ -98,7 +126,10 @@ void Decorate(uo::UObject* spectators) {
     uo::UObject* cls = uo::ClassOf(spectators);
     int n;
     const wchar_t* const* o;
-    o = rules::TeamSizeOptions(&n);  gRows[RTeam] = MakeRow(box, cls, L"Team Size", List(o, n), v.teamSize - 1);
+    gRows[RTeams] = MakeRow(box, cls, L"Teams", rules::TeamCountOptions(), v.teams - 2);
+    gRows[RTeam] = MakeRow(box, cls, L"Team Size", rules::TeamSizeLabels(v.teams), v.teamSize - 1);
+    gRows[RScoring] = MakeRow(box, cls, L"Scoring", rules::ScoringOptions(), v.koOnly);
+    gRows[RKos] = MakeRow(box, cls, L"KOs to Win", rules::KoOptions(), rules::KoIndex(v.kos));
     gRows[RCp] = MakeRow(box, cls, L"Points to Win", rules::CpScoreOptions(), rules::CpIndex(v.cp));
     gRows[RPc] = MakeRow(box, cls, L"Cells to Win", rules::PcScoreOptions(), rules::PcIndex(v.pc));
     o = rules::ObjectiveOptions(&n); gRows[RRotation] = MakeRow(box, cls, L"Objectives", List(o, n), v.objectives);
@@ -112,11 +143,13 @@ void Decorate(uo::UObject* spectators) {
     }
     gModModeShown = -1;
     ShowModRows(v.modMode);
+    gTeamsShown = -1; gScoringShown = -1;
+    ShowTeamRows(v.teams, v.koOnly);
     Log("settings: rows added to %p", box);
 }
 }  // namespace
 
-// Developer testing: "ui setrow <row> <index>" (rows: 0 team, 1 points, 2 cells, 3 objectives, 4 capture, 5 mods,
+// Developer testing: "ui setrow <row> <index>" (rows: 0 teams, 1 team size, 2 scoring, 3 KOs, 4 points, 5 cells, 6 objectives, 7 capture, 8 mods,
 // 10+i map mod i, 99 spectators).
 void DevSetRow(int row, int index) {
     uo::UObject* r = row == 99 ? gSpecRow : row >= 10 ? (row - 10 < 32 ? gModRows[row - 10] : nullptr) : row < NumRows ? gRows[row] : nullptr;
@@ -150,7 +183,11 @@ void Tick() {
         if (!gBox) return;
     }
     rules::Values v = rules::Current();
+    if (IndexOf(gRows[RTeams]) >= 0) v.teams = IndexOf(gRows[RTeams]) + 2;
     if (IndexOf(gRows[RTeam]) >= 0) v.teamSize = IndexOf(gRows[RTeam]) + 1;
+    if (IndexOf(gRows[RKos]) >= 0) v.kos = rules::KoValueAt(IndexOf(gRows[RKos]));
+    if (IndexOf(gRows[RScoring]) >= 0) v.koOnly = IndexOf(gRows[RScoring]);
+    ShowTeamRows(v.teams, v.koOnly);
     if (IndexOf(gRows[RCp]) >= 0) v.cp = rules::CpValueAt(IndexOf(gRows[RCp]));
     if (IndexOf(gRows[RPc]) >= 0) v.pc = rules::PcValueAt(IndexOf(gRows[RPc]));
     if (IndexOf(gRows[RRotation]) >= 0) v.objectives = IndexOf(gRows[RRotation]);
@@ -178,7 +215,7 @@ void Tick() {
         if (places != lobby::SpectatorPlaces()) lobby::SetSpectatorPlaces(places);
     }
     rules::Values old = rules::Current();
-    if (v.teamSize != old.teamSize) lobby::SetTeamSize(v.teamSize);
     rules::Set(v);
+    if (v.teamSize != old.teamSize || v.teams != old.teams) lobby::SetTeamSize(v.teamSize);
 }
 }  // namespace settings

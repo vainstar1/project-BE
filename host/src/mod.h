@@ -5,8 +5,8 @@
 #include <functional>
 #include <vector>
 
-#define BE1V1_VERSION "2.2.0"
-#define BE1V1_PROTOCOL "3"     // lobbies only list/accept peers with the same protocol
+#define BE1V1_VERSION "2.3.0"
+#define BE1V1_PROTOCOL "4"     // lobbies only list/accept peers with the same protocol (4: 3-4 teams)
 
 namespace net {
 void Travel(const std::wstring& url);          // absolute travel on the next tick (menu -> map, or back to menu)
@@ -49,6 +49,9 @@ bool OnListButton(void* btn);   // a PromptListButton was pressed (lobby screen 
 
 namespace ui {
 void Install();
+void ResolveInMatch();          // (re)hooks Blueprint events of classes loaded with the match
+// After-hook on a Blueprint function (run through ProcessEvent): params = its parameter block, ret = its return value.
+void OnEventAfter(const wchar_t* cls, const wchar_t* fn, std::function<void(uint8_t* self, void* params, uint8_t* ret)> after);
 void Tick(float dt);
 void ShowMessage(const std::wstring& title, const std::wstring& body);   // native confirmation popup with OK
 void ShowBusy(bool on);
@@ -78,7 +81,8 @@ std::wstring LatestVersion();
 namespace rules {
 // cp / pc: points (Objective Control) and cells (Power Collection) to win, 0 = the map's own target.
 // modMode: how the host picks map modifiers in the panel (0 off, 1 chosen one by one, 2 all).
-struct Values { int cp = 0, objectives = 0, capture = 0, teamSize = 4; uint32_t mods = 0; int pc = 0, modMode = 0; };
+struct Values { int cp = 0, objectives = 0, capture = 0, teamSize = 4; uint32_t mods = 0; int pc = 0, modMode = 0, teams = 2, kos = 0, koOnly = 0; };
+int KoTarget(const Values& v);   // knockouts to win with 3-4 teams
 int NumMods();
 const wchar_t* ModName(int i);
 void Install();
@@ -89,6 +93,12 @@ Values Decode(const std::string& s);
 const wchar_t* const* ObjectiveOptions(int* n);
 const wchar_t* const* CaptureOptions(int* n);
 const wchar_t* const* TeamSizeOptions(int* n);
+std::vector<std::wstring> TeamSizeLabels(int teams);   // "1v1v1" ... for 2-4 teams
+std::vector<std::wstring> TeamCountOptions();          // "2 Teams" "3 Teams" "4 Teams"
+std::vector<std::wstring> KoOptions();                 // knockouts to win (index 0 = default)
+std::vector<std::wstring> ScoringOptions();            // "Objectives" "Knockouts Only"
+int KoIndex(int value);
+int KoValueAt(int index);
 const wchar_t* const* ModModeOptions(int* n);
 std::vector<std::wstring> CpScoreOptions();
 std::vector<std::wstring> PcScoreOptions();
@@ -98,6 +108,25 @@ int CpValueAt(int index);
 int PcValueAt(int index);
 void Tick();                 // re-applies the rules while the match world streams in
 void ApplyOnMapLoad();
+}
+
+// Steam profile pictures (avatars.cpp)
+namespace avatars {
+uint8_t* Texture(uint64_t steamId);          // UTexture2D of the player's Steam avatar, nullptr until it's available
+void Show(uint8_t* image, uint8_t* tex);     // puts it on a UMG Image
+uint64_t SteamIdFor(uint64_t memberId);      // local test lobbies use made-up ids: this account's own
+}
+
+// 3 and 4 team games (teams.cpp)
+namespace teams {
+bool Active();                  // the current custom game has more than two teams
+bool KoOnly();                  // "Knockouts Only" scoring (Team Brawl), any number of teams
+int Count();                    // teams in the current custom game (2 outside custom games)
+int BaseOf(int team);           // the base (spawn area) a team uses: team % 2
+const float* Colour(int team);  // team colour (linear RGB): 0 blue, 1 red, 2 yellow, 3 green
+void Install();
+void Tick();
+void Relabel(uint8_t* loadingScreen);   // "Team Brawl" texts on the loading screen (and fighter select)
 }
 
 namespace settings {

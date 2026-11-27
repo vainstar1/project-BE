@@ -56,6 +56,9 @@ SF(int, SteamAPI_ISteamMatchmaking_GetLobbyMemberLimit, void*, u64)
 SF(bool, SteamAPI_ISteamMatchmaking_RequestLobbyData, void*, u64)
 SF(bool, SteamAPI_ISteamMatchmaking_InviteUserToLobby, void*, u64, u64)
 SF(bool, SteamAPI_ISteamUtils_GetAPICallResult, void*, SteamAPICall, void*, int, int, bool*)
+SF(int, SteamAPI_ISteamFriends_GetLargeFriendAvatar, void*, u64)
+SF(bool, SteamAPI_ISteamUtils_GetImageSize, void*, int, uint32_t*, uint32_t*)
+SF(bool, SteamAPI_ISteamUtils_GetImageRGBA, void*, int, uint8_t*, int)
 SF(bool, SteamAPI_ISteamUtils_IsAPICallCompleted, void*, SteamAPICall, bool*)
 SF(void, SteamAPI_RegisterCallback, void*, int)
 #undef SF
@@ -128,6 +131,7 @@ bool Resolve() {
     R(SteamAPI_ISteamMatchmaking_SetLobbyType) R(SteamAPI_ISteamMatchmaking_SetLobbyJoinable) R(SteamAPI_ISteamMatchmaking_SetLobbyMemberLimit)
     R(SteamAPI_ISteamMatchmaking_GetLobbyMemberLimit) R(SteamAPI_ISteamMatchmaking_RequestLobbyData) R(SteamAPI_ISteamMatchmaking_InviteUserToLobby)
     R(SteamAPI_ISteamUtils_GetAPICallResult) R(SteamAPI_ISteamUtils_IsAPICallCompleted) R(SteamAPI_RegisterCallback)
+    R(SteamAPI_ISteamFriends_GetLargeFriendAvatar) R(SteamAPI_ISteamUtils_GetImageSize) R(SteamAPI_ISteamUtils_GetImageRGBA)
 #undef R
     gClient = SteamClient();
     int user = SteamAPI_GetHSteamUser(), pipe = SteamAPI_GetHSteamPipe();
@@ -243,5 +247,19 @@ void Tick() {
         it = gPending.erase(it);
         done(ok, buf.data());
     }
+}
+// The player's large Steam avatar (184x184 RGBA). False while Steam is still downloading it (asked for here).
+bool AvatarRGBA(uint64_t id, std::vector<uint8_t>& rgba, int& w, int& h) {
+    if (!Ready() || !id) return false;
+    int img = SteamAPI_ISteamFriends_GetLargeFriendAvatar(gFriends, id);
+    static int logged;
+    if (img <= 0 && logged++ < 10) Log("steam: avatar of %llu not ready (%d)", (unsigned long long)id, img);
+    if (img <= 0) { if (img == 0) SteamAPI_ISteamFriends_RequestUserInformation(gFriends, id, false); return false; }
+    uint32_t iw = 0, ih = 0;
+    if (!SteamAPI_ISteamUtils_GetImageSize(gUtils, img, &iw, &ih) || !iw || !ih || iw > 1024 || ih > 1024) return false;
+    rgba.resize((size_t)iw * ih * 4);
+    if (!SteamAPI_ISteamUtils_GetImageRGBA(gUtils, img, rgba.data(), (int)rgba.size())) return false;
+    w = (int)iw; h = (int)ih;
+    return true;
 }
 }  // namespace steam

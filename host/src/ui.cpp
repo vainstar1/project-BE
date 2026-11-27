@@ -15,7 +15,7 @@ namespace {
 // Handlers get the parameter block (FFrame::Locals) and return true to swallow the call (script events only).
 struct FFrame { void* vt; uint8_t pad[8]; uo::UObject* Node; uo::UObject* Object; uint8_t* Code; uint8_t* Locals; };
 using NativeFn = void(__fastcall*)(uo::UObject*, FFrame*, void*);
-struct EventHook { std::wstring cls, fn; uo::UObject* func; std::function<bool(uo::UObject*, void*)> h; };
+struct EventHook { std::wstring cls, fn; uo::UObject* func; std::function<bool(uo::UObject*, void*)> h; std::function<void(uo::UObject*, void*, uint8_t*)> after; };
 std::vector<EventHook> gHooks;
 bool gOfficialQueue;   // let the next Custom Queue press reach the game
 struct Patched { uo::UObject* func; NativeFn orig; size_t hook; };
@@ -27,12 +27,20 @@ void __fastcall FuncThunk(uo::UObject* ctx, FFrame* st, void* res) {
     for (auto& p : gPatched) {
         if (p.func != st->Node) continue;
         auto& h = gHooks[p.hook];
-        if (h.func == p.func && h.h(ctx, st->Locals)) return;
+        if (h.func == p.func && h.h && h.h(ctx, st->Locals)) return;
         p.orig(ctx, st, res);
+        // The return value: Blueprint code writes it to the caller's result address (else it sits in the locals).
+        if (h.func == p.func && h.after) h.after(ctx, st->Locals, res ? (uint8_t*)res : st->Locals + F<uint16_t>(p.func, uo::Func_RetOffset));
         return;
     }
 }
-void OnEvent(const wchar_t* cls, const wchar_t* fn, std::function<bool(uo::UObject*, void*)> h) { gHooks.push_back({ cls, fn, nullptr, h }); }
+void OnEvent(const wchar_t* cls, const wchar_t* fn, std::function<bool(uo::UObject*, void*)> h) { gHooks.push_back({ cls, fn, nullptr, h, nullptr }); }
+}  // namespace
+// After-hook: runs once the function returned; gets the parameter block and the return value's address.
+void OnEventAfter(const wchar_t* cls, const wchar_t* fn, std::function<void(uo::UObject*, void*, uint8_t*)> after) {
+    gHooks.push_back({ cls, fn, nullptr, nullptr, after });
+}
+namespace {
 void ResolveHooks() {
     for (size_t i = 0; i < gHooks.size(); i++) {
         auto& h = gHooks[i];
@@ -308,7 +316,8 @@ bool PromptOpen() { return !gPrompts.empty(); }
 
 std::wstring TextToString(const void* ftext) {
     uo::UObject* lib = uo::FindFirst(uo::FindClass(L"KismetTextLibrary"), true);
-    if (!lib || !ftext) return L"";
+    // An FText without text data (a widget being built or torn down) would crash the conversion.
+    if (!lib || !ftext || !((const uo::FText*)ftext)->Data) return L"";
     uo::Call k(lib, L"Conv_TextToString");
     k.set(L"InText", *(const uo::FText*)ftext).run();
     FString s = k.get<FString>(L"ReturnValue");
@@ -329,6 +338,13 @@ void ShowBusy(bool on) {
     else uo::Call(s, L"ClearBusyWaiting").run();
 }
 
+// Blueprint classes that only exist in matches (fighter select, the HUD) get their hooks there.
+void ResolveInMatch() {
+    static DWORD last;
+    if (GetTickCount() - last < 2000) return;
+    last = GetTickCount();
+    ResolveHooks();
+}
 void Tick(float dt) {
     static float acc;
     acc += dt;

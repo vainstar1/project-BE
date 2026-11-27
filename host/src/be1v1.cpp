@@ -118,6 +118,7 @@ void InstallGame();  // game.cpp
 void LobbyDevCommand(const char* cmd);   // lobby.cpp
 void SysDevCommand(const char* cmd);     // sys.cpp
 void GameTeamsTick();                    // game.cpp
+void FpsDevReport();                     // game.cpp
 
 static char gDllDir[MAX_PATH];
 static bool gUoReady;
@@ -143,6 +144,7 @@ static void DevPoll() {
     Log("dev cmd: %s", buf);
     if (!strncmp(buf, "lobby ", 6)) LobbyDevCommand(buf + 6);
     else if (!strncmp(buf, "ui ", 3)) ui::DevCommand(buf + 3);
+    else if (!strcmp(buf, "fps")) FpsDevReport();
     else SysDevCommand(buf);
 }
 
@@ -163,7 +165,7 @@ void GameTick(float dt) {
     ui::Tick(dt); ui::FastTick();      QueryPerformanceCounter(&t[n++]);
     lobby::Tick(dt);                    QueryPerformanceCounter(&t[n++]);
     settings::Tick();                   QueryPerformanceCounter(&t[n++]);
-    rules::Tick();                      QueryPerformanceCounter(&t[n++]);
+    rules::Tick(); teams::Tick();       QueryPerformanceCounter(&t[n++]);
     GameTeamsTick();                    QueryPerformanceCounter(&t[n++]);
     update::Tick(dt);                   QueryPerformanceCounter(&t[n++]);
     double total = (t[n - 1].QuadPart - t[0].QuadPart) * 1000.0 / freq.QuadPart;
@@ -225,6 +227,7 @@ static void Init() {
     InstallGame();
     lobby::Install();
     rules::Install();
+    teams::Install();
     ui::Install();
     update::Install();
     MH_EnableHook(MH_ALL_HOOKS);

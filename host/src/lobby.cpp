@@ -44,7 +44,7 @@ constexpr size_t CGM_MemberList = 0x80, CGM_Teams = 0xe0, CGM_Spectators = 0x110
 // MBFECustomGameMenu fields
 constexpr size_t Menu_Manager = 0x4a8, Menu_LocalTeam = 0x4c0, Menu_LocalTeamSet = 0x4c4, Menu_NumQueueSlots = 0x458;
 // MBFECustomGameTeamSlotButton fields
-constexpr size_t Slot_TeamId = 0x480, Slot_Occupied = 0x4a8, Slot_IsLocal = 0x4aa, Slot_NetId = 0x4b0;
+constexpr size_t Slot_TeamId = 0x480, Slot_Name = 0x488, Slot_Occupied = 0x4a8, Slot_IsLocal = 0x4aa, Slot_NetId = 0x4b0;
 constexpr size_t MapInfoSize = 0x90, MI_Name = 0x0, MI_Text = 0x8, MI_Mode = 0x20, MI_Path = 0x28;
 
 struct Member { void* NetIdObj; void* NetIdRef; FString NetId; FString Nickname; int32_t TeamId; bool bLeader; bool bLocal; uint8_t pad[2]; };
@@ -379,6 +379,23 @@ void WriteMembers(uo::UObject* m, const std::vector<std::pair<uint64_t, int>>& m
     Fn<void(__fastcall*)(void*)>(A_CountTeams)(m);
 }
 
+// The member shown in a team slot. The slot's NetId is the string of the member's online id object, which our
+// members don't have, so the slot is matched by the shown name (and team) against the member list.
+uint64_t SlotMember(uo::UObject* slot) {
+    uint64_t id = _wcstoui64(F<FString>(slot, Slot_NetId).c_str(), nullptr, 10);
+    if (id) return id;
+    uo::UObject* m = Mgr();
+    if (!m || !F<bool>(slot, Slot_Occupied)) return 0;
+    const wchar_t* name = F<FString>(slot, Slot_Name).c_str();
+    int team = F<int32_t>(slot, Slot_TeamId);
+    auto& list = F<TArray<Member>>(m, CGM_MemberList);
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < list.Num; i++)
+            if (!wcscmp(list.Data[i].Nickname.c_str(), name) && (pass == 1 || list.Data[i].TeamId == team))
+                return _wcstoui64(list.Data[i].NetId.c_str(), nullptr, 10);
+    return 0;
+}
+
 // Team slot widgets (created by the menu with the game instance as outer). The slot Blueprint collapses the local
 // player's row when its data changes after construction; occupied rows must stay visible.
 std::vector<uo::UObject*> gSlots;
@@ -410,16 +427,29 @@ std::vector<int> ParseCsv(const std::string& s) {
 }
 std::string Csv(const int32_t* d, int n) { std::string s; for (int i = 0; i < n; i++) { if (i) s += ","; s += I(d[i]); } return s; }
 
-int TeamMax(uo::UObject* m, int t) { return t < 0 ? F<Team>(m, CGM_Spectators).Max : (&F<Team>(m, CGM_Teams))[t].Max; }
+// Teams in this lobby (2-4, the host's "Teams" setting) and their size (the same for every team).
+int NumTeams() { return std::max(2, std::min(4, rules::Current().teams)); }
+bool ValidTeam(int t) { return t >= -1 && t < NumTeams(); }
+int TeamMax(uo::UObject* m, int t) { return t < 0 ? F<Team>(m, CGM_Spectators).Max : t < NumTeams() ? (&F<Team>(m, CGM_Teams))[0].Max : 0; }
 
 int CountTeam(int t) { int n = 0; for (auto& kv : gTeam) if (kv.second == t) n++; return n; }
-// New members go to the smaller team; when both teams are full they watch.
+int CountPlayers() { int n = 0; for (auto& kv : gTeam) if (kv.second >= 0) n++; return n; }
+// New members go to the smallest team with room (the first of equals); when every team is full they watch.
 int AutoTeam(uo::UObject* m) {
-    int a = CountTeam(0), b = CountTeam(1);
-    bool roomA = a < TeamMax(m, 0), roomB = b < TeamMax(m, 1);
-    if (roomA && (a <= b || !roomB)) return 0;
-    if (roomB) return 1;
-    return -1;
+    int best = -1;
+    for (int t = 0; t < NumTeams(); t++)
+        if (CountTeam(t) < TeamMax(m, t) && (best < 0 || CountTeam(t) < CountTeam(best))) best = t;
+    return best;
+}
+// Players on teams that no longer exist, or beyond a team's size, move to a team with room (else they watch).
+void FitTeams(uo::UObject* m) {
+    for (auto& kv : gTeam) {
+        int t = kv.second;
+        if (t < 0) continue;
+        if (t < NumTeams() && CountTeam(t) <= TeamMax(m, t)) continue;
+        kv.second = -2;
+        kv.second = AutoTeam(m);
+    }
 }
 
 // ---- host side ----------------------------------------------------------------------------------------------
@@ -439,7 +469,7 @@ void HostSync(uo::UObject* m) {
             if (n > gReqSeen[id] || isNew) {
                 gReqSeen[id] = std::max(n, gReqSeen[id]);
                 int t = (int)ToI(want.substr(0, c));
-                if ((!F<bool>(m, CGM_TeamsLocked) || isNew) && t >= -1 && t <= 1 && gTeam[id] != t && CountTeam(t) < TeamMax(m, t)) {
+                if ((!F<bool>(m, CGM_TeamsLocked) || isNew) && ValidTeam(t) && gTeam[id] != t && CountTeam(t) < TeamMax(m, t)) {
                     gTeam[id] = t;
                     Log("lobby: %llu -> team %d (asked)", (unsigned long long)id, t);
                 }
@@ -476,7 +506,7 @@ void HostSync(uo::UObject* m) {
         { "map", N(MapPath(roster.Num ? roster.Data[F<int32_t>(m, CGM_CurrentMap) % roster.Num] : 0)) },
         { "rules", rules::Encode() },
         { "mapname", N(MapName(roster.Num ? roster.Data[F<int32_t>(m, CGM_CurrentMap) % roster.Num] : 0)) },
-        { "max", I(2 * (&F<Team>(m, CGM_Teams))[0].Max) },
+        { "max", I(NumTeams() * (&F<Team>(m, CGM_Teams))[0].Max) },
     };
     std::string snap;
     for (auto& e : kv) snap += e.first + "=" + e.second + "\n";
@@ -680,6 +710,92 @@ bool Animating(uo::UObject* w) {
     uo::Call c(w, L"IsAnyAnimationPlaying");
     return w && c.ok() && c.run().get<bool>(L"ReturnValue");
 }
+// ---- teams 3 and 4 on the lobby screen ------------------------------------------------------------------------
+// The menu builds its team columns from TeamOrder (0, 1, -1) and one slot container per entry. Teams 2 and 3 get
+// their own containers below the columns of teams 0 and 1 (a 2x2 grid: blue and red on top, yellow and green below),
+// so the game's own slot builder fills them with real team slots. Their size comes from the hooked team-size lookup
+// (0 when the lobby has fewer teams, which leaves the containers empty).
+constexpr size_t Menu_TeamOrder = 0x448, Menu_Containers = 0x480, Menu_QueuedContainers = 0x490, Menu_SlotLists = 0x4b0;
+constexpr uintptr_t A_StaticConstructObject = 0x1416aac50;
+constexpr uintptr_t A_GetTeamMaxPlayers = 0x141100bb0;   // int UMBCustomGameManager::GetTeamMaxPlayers(int TeamId)
+using IntTeamFn = int(__fastcall*)(void*, int);
+IntTeamFn oGetTeamMaxPlayers;
+int __fastcall hkGetTeamMaxPlayers(void* mgr, int team) {
+    if (gSt == St::Lobby && team >= 2) return team < NumTeams() ? (&F<Team>((uo::UObject*)mgr, CGM_Teams))[0].Max : 0;
+    return oGetTeamMaxPlayers(mgr, team);
+}
+// The members of one team (the menu fills each team's slots from it); the game's version only knows teams -1, 0, 1.
+constexpr uintptr_t A_GetTeamMembers = 0x141100be0;   // TArray<FMBCustomGameMember>* (Mgr*, TArray* Out, int TeamId)
+constexpr uintptr_t A_MembersGrow = 0x140356770, A_MemberCopy = 0x140fb8980;
+using TeamMembersFn = TArray<Member>*(__fastcall*)(void*, TArray<Member>*, int);
+TeamMembersFn oGetTeamMembers;
+TArray<Member>* __fastcall hkGetTeamMembers(void* mgr, TArray<Member>* out, int team) {
+    if (gSt != St::Lobby || team < 2) return oGetTeamMembers(mgr, out, team);
+    out->Data = nullptr; out->Num = out->Max = 0;
+    auto& list = F<TArray<Member>>((uo::UObject*)mgr, CGM_MemberList);
+    for (int i = 0; i < list.Num; i++) {
+        if (list.Data[i].TeamId != team) continue;
+        int n = out->Num++;
+        if (out->Num > out->Max) Fn<void(__fastcall*)(void*, int)>(A_MembersGrow)(out, n);
+        Fn<void(__fastcall*)(void*, void*)>(A_MemberCopy)(&out->Data[n], &list.Data[i]);
+    }
+    return out;
+}
+uo::UObject* NewWidget(const wchar_t* cls, uo::UObject* outer, const wchar_t* name) {
+    uo::UObject* c = uo::FindClass(cls);
+    if (!c || !outer) return nullptr;
+    using SCO = uo::UObject*(__fastcall*)(uo::UObject*, uo::UObject*, FName, uint32_t, uint32_t, uo::UObject*, bool, void*, bool);
+    return Fn<SCO>(A_StaticConstructObject)(c, outer, uo::MakeName(name), 0, 0, nullptr, false, nullptr, false);
+}
+template <class T> void Append(TArray<T>& a, const T& v) {
+    if (a.Num >= a.Max) {
+        int max = a.Max ? a.Max * 2 : 4;
+        T* d = (T*)uo::Malloc(sizeof(T) * max);
+        memset((void*)d, 0, sizeof(T) * max);
+        if (a.Num) memcpy((void*)d, (void*)a.Data, sizeof(T) * a.Num);
+        a.Data = d; a.Max = max;
+    }
+    a.Data[a.Num++] = v;
+}
+struct SlotList { uint8_t raw[0x20]; };
+uo::UObject* gExtraBox[4];          // containers of teams 2 and 3 (index = team)
+uo::UObject* gExtraMenu;            // the menu they were added to
+void AddTeamColumns(uo::UObject* menu) {
+    if (!menu || menu == gExtraMenu) return;
+    auto& order = F<TArray<int32_t>>(menu, Menu_TeamOrder);
+    auto& boxes = F<TArray<uo::UObject*>>(menu, Menu_Containers);
+    auto& queued = F<TArray<uo::UObject*>>(menu, Menu_QueuedContainers);
+    auto& lists = F<TArray<SlotList>>(menu, Menu_SlotLists);
+    for (int i = 0; i < order.Num; i++) if (order.Data[i] >= 2) { gExtraMenu = menu; return; }   // already there
+    if (order.Num != 3 || boxes.Num != 3 || queued.Num != 3 || lists.Num != 3) {
+        Log("lobby: unexpected team layout (%d %d %d %d)", order.Num, boxes.Num, queued.Num, lists.Num);
+        gExtraMenu = menu;
+        return;
+    }
+    for (int team = 2; team <= 3; team++) {
+        uo::UObject* under = boxes.Data[team - 2];          // the slot container of team 0 / team 1
+        uo::Call par(under, L"GetParent");
+        uo::UObject* column = par.ok() ? par.run().get<uo::UObject*>(L"ReturnValue") : nullptr;
+        uo::UObject* tree = uo::OuterOf(under);
+        uo::UObject* box = NewWidget(L"VerticalBox", tree, team == 2 ? L"VerticalBox_Team3Slots" : L"VerticalBox_Team4Slots");
+        uo::UObject* dummy = NewWidget(L"VerticalBox", tree, team == 2 ? L"VerticalBox_Team3Queue" : L"VerticalBox_Team4Queue");
+        if (!column || !box || !dummy) { Log("lobby: couldn't add the columns of team %d", team + 1); gExtraMenu = menu; return; }
+        // A gap between the two teams of a column, the size of one slot's padding.
+        SlotLayout gap; gap.Read(SlotOf(under));
+        gap.hasPad = true; float pad[4] = { 0, 24, 0, 0 }; memcpy(gap.padding, pad, 16);
+        AddTo(column, box, &gap);
+        Append(order, (int32_t)team);
+        Append(boxes, box);
+        Append(queued, dummy);
+        Append(lists, SlotList{});
+        gExtraBox[team] = box;
+    }
+    gExtraMenu = menu;
+    Log("lobby: team columns 3 and 4 added");
+    uo::Call(menu, L"RefreshTeamSlotButtons").run();
+    uo::Call(menu, L"NativeOnSessionUpdated").run();
+}
+
 void DecorateScreen() {
     uo::UObject* scr = Screen();
     if (!scr) return;
@@ -690,6 +806,7 @@ void DecorateScreen() {
         uo::Call(menu, L"RefreshTeamSlotButtons").run();
         uo::Call(menu, L"NativeOnSessionUpdated").run();
     }
+    AddTeamColumns(menu);
     if (scr == gDecorated) return;
     // Moving buttons while the screen slides in freezes its intro animation half-way (the side columns then sit
     // off their places): wait until it has finished.
@@ -775,7 +892,13 @@ void LabelScreen() {
             }
     }
     for (uo::UObject* s : uo::FindAllTransient(uo::FindClass(L"MBFECustomGameTeamSlotButton"))) {
-        if (F<bool>(s, Slot_Occupied)) continue;
+        // Occupied places show the player's Steam profile picture (the game asked Xbox Live, which is gone).
+        if (F<bool>(s, Slot_Occupied)) {
+            uint64_t id = SlotMember(s);
+            if (uo::UObject* tex = id ? avatars::Texture(id) : nullptr)
+                for (const wchar_t* n : { L"Icon", L"Icon1" }) avatars::Show(Named(s, n), tex);
+            continue;
+        }
         uo::Call par(s, L"GetParent");
         if (!par.ok() || !par.run().get<uo::UObject*>(L"ReturnValue")) continue;
         int team = F<int32_t>(s, Slot_TeamId);
@@ -795,11 +918,63 @@ void LabelScreen() {
         const wchar_t* priv[] = { L"Public", L"Friends only", L"Invite only" };
         int p = F<uint8_t>(m, CGM_Privacy);
         // Two short lines: a wider line under the title pushes the side columns outward.
-        std::wstring info = MapName(idx) + L" / " + ModeName(idx) + L"\n" + std::to_wstring(size) + L"v" + std::to_wstring(size);
+        if (NumTeams() > 2 && idx >= 7 && idx <= 13) idx -= 7;   // 3-4 teams play the arena's Objective Control version
+        std::wstring mode = rules::Current().koOnly && !IsTrainingMap(idx) ? L"Team Brawl" : ModeName(idx);
+        auto sizes = rules::TeamSizeLabels(NumTeams());
+        std::wstring info = MapName(idx) + L" / " + mode + L"\n" + (size >= 1 && size <= 4 ? sizes[size - 1] : L"");
         if (roster.Num > 1) info += L" / " + std::to_wstring(roster.Num) + L" maps";
         info += std::wstring(L" / ") + (p >= 0 && p < 3 ? priv[p] : L"");
         SetTextIfDifferent(gInfoText, Upper(info));
     }
+}
+
+// ---- loading screen ---------------------------------------------------------------------------------------------
+// In custom games the loading screen lists the lobby's members: team 0 on one side, team 1 on the other, the local
+// player's team on the left. With 3-4 teams it shows "your team" against everyone else (grouped by team), and every
+// name plate gets the player's Steam picture (the game asked Xbox Live).
+constexpr uintptr_t A_LoadingFromLobby = 0x141086330;   // void UMBLoadingScreenManager::(build runtime data from the lobby)
+constexpr uintptr_t A_LoadingSetData = 0x141084af0;     // void UMBLoadingScreenWidget::(set runtime data)(Widget*, Data*)
+constexpr size_t LSM_Widget = 0x90, LSM_Team0 = 0x180, LSM_Team1 = 0x190, LSPI_Size = 0x40, LSPI_Name = 0x0, LSPI_Avatar = 0x10;
+using LoadingFn = void(__fastcall*)(uint8_t*);
+LoadingFn oLoadingFromLobby;
+uint64_t MemberIdByName(const wchar_t* name) {
+    uo::UObject* m = Mgr();
+    if (!m) return 0;
+    auto& list = F<TArray<Member>>(m, CGM_MemberList);
+    for (int i = 0; i < list.Num; i++) if (!wcscmp(list.Data[i].Nickname.c_str(), name)) return _wcstoui64(list.Data[i].NetId.c_str(), nullptr, 10);
+    return 0;
+}
+void __fastcall hkLoadingFromLobby(uint8_t* lsm) {
+    uo::UObject* m = Mgr();
+    if (gSt != St::Lobby || !m) { oLoadingFromLobby(lsm); return; }
+    auto& list = F<TArray<Member>>(m, CGM_MemberList);
+    std::vector<Member> keep(list.Data, list.Data + list.Num);
+    if (NumTeams() > 2) {
+        int mine = LocalTeamInLobby();
+        std::vector<Member> view = keep;
+        std::stable_sort(view.begin(), view.end(), [&](const Member& a, const Member& b) {
+            auto key = [&](const Member& x) { return x.TeamId < 0 ? 99 : x.TeamId == mine ? -1 : x.TeamId; };
+            return key(a) < key(b);
+        });
+        for (auto& v : view) if (v.TeamId >= 0) v.TeamId = v.TeamId == mine ? 0 : 1;
+        memcpy((void*)list.Data, (void*)view.data(), sizeof(Member) * view.size());
+    }
+    oLoadingFromLobby(lsm);
+    memcpy((void*)list.Data, (void*)keep.data(), sizeof(Member) * keep.size());
+    int shown = 0;
+    for (size_t side : { LSM_Team0, LSM_Team1 }) {
+        auto& arr = F<TArray<uint8_t>>(lsm, side);
+        for (int i = 0; i < arr.Num; i++) {
+            uint8_t* e = arr.Data + (size_t)i * LSPI_Size;
+            uint64_t id = MemberIdByName(F<FString>(e, LSPI_Name).c_str());
+            uo::UObject* tex = id ? avatars::Texture(id) : nullptr;
+            if (tex) { F<uo::UObject*>(e, LSPI_Avatar) = tex; shown++; }
+        }
+    }
+    if (uint8_t* w = F<uint8_t*>(lsm, LSM_Widget)) Fn<void(__fastcall*)(void*, void*)>(A_LoadingSetData)(w, lsm + LSM_Team0);
+    ui::ResolveInMatch();   // the loading screen's Blueprint events (its class is loaded by now)
+    teams::Relabel(F<uint8_t*>(lsm, LSM_Widget));
+    Log("lobby: loading screen lists %d + %d players (%d Steam pictures)", F<TArray<uint8_t>>(lsm, LSM_Team0).Num, F<TArray<uint8_t>>(lsm, LSM_Team1).Num, shown);
 }
 
 // ---- hooks ----------------------------------------------------------------------------------------------------
@@ -812,7 +987,10 @@ void __fastcall hkCustomStart(void* mgr) {
     auto& roster = F<TArray<int32_t>>(m, CGM_MapRoster);
     int cur = F<int32_t>(m, CGM_CurrentMap);
     int idx = roster.Num ? roster.Data[cur % roster.Num] : 0;
-    gPlayersInMatch = CountTeam(0) + CountTeam(1);
+    // 3-4 teams play Objective Control (Power Collection's cells exist for two teams only): a Power Collection pick
+    // plays the same arena's Objective Control version. Knockouts Only scoring also runs on Objective Control rules.
+    if ((teams::Active() || teams::KoOnly()) && idx >= 7 && idx <= 13) idx -= 7;
+    gPlayersInMatch = CountPlayers();
     // Training maps (Dojo, Playground) start with the host alone and friends drop in; matches wait for everyone.
     int32_t minPlayers = IsTrainingMap(idx) ? 1 : std::max(1, gPlayersInMatch);
     PatchBytes((void*)VA(A_MinPlayers), &minPlayers, sizeof minPlayers);
@@ -832,7 +1010,7 @@ bool __fastcall hkSetPlayerTeam(void* menu, FString* netId, int team) {
     uint64_t id = _wcstoui64(netId->c_str(), nullptr, 10);
     uo::UObject* m = Mgr();
     if (!m || !gTeam.count(id) || gTeam[id] == team) return gTeam.count(id) != 0;
-    if (team < -1 || team > 1 || CountTeam(team) >= TeamMax(m, team)) return false;
+    if (!ValidTeam(team) || CountTeam(team) >= TeamMax(m, team)) return false;
     gTeam[id] = team;
     Log("lobby: host moved %llu to team %d", (unsigned long long)id, team);
     HostSync(m);
@@ -862,8 +1040,9 @@ void __fastcall hkSetLocalTeam(void* menu, int team) {
 bool CanStartNow() {
     uo::UObject* m = Mgr();
     if (!m || !gHost) return false;
-    int a = CountTeam(0), b = CountTeam(1);
-    return a + b >= 1 && a <= TeamMax(m, 0) && b <= TeamMax(m, 1);
+    if (CountPlayers() < 1) return false;
+    for (int t = 0; t < NumTeams(); t++) if (CountTeam(t) > TeamMax(m, t)) return false;
+    return true;
 }
 bool __fastcall hkCanStart(void* menu) { return gSt == St::Lobby ? CanStartNow() : oCanStart(menu); }
 bool __fastcall hkTryStart(void* menu) {
@@ -889,7 +1068,7 @@ void RequestTeam(int team) {
     if (!m) return;
     if (gHost) {
         uint64_t me = gB->Me();
-        if (team >= -1 && team <= 1 && gTeam[me] != team && CountTeam(team) < TeamMax(m, team)) gTeam[me] = team;
+        if (ValidTeam(team) && gTeam[me] != team && CountTeam(team) < TeamMax(m, team)) gTeam[me] = team;
         HostSync(m);
     } else {
         gB->SetMine(gId, "want", I(team) + ":" + I(++gMyReq));
@@ -933,7 +1112,8 @@ void Hook(uintptr_t va, void* det, void** orig, const char* name) {
 namespace lobby {
 bool Active() { return gSt == St::Lobby; }
 bool IsHost() { return gSt == St::Lobby && gHost; }
-int MyTeam() { return gMyTeamInMatch; }
+int gForceTeam = -99;   // dev override
+int MyTeam() { return gForceTeam != -99 ? gForceTeam : gMyTeamInMatch; }
 int PlayersInMatch() { return gPlayersInMatch; }
 std::wstring StatusLine() {
     const wchar_t* s[] = { L"idle", L"creating", L"joining", L"lobby" };
@@ -1006,10 +1186,9 @@ void SetTeamSize(int perTeam) {
     if (!m || !gHost) return;
     Team* t = &F<Team>(m, CGM_Teams);
     t[0].Max = t[1].Max = perTeam;
-    // Players beyond the new size move to the other team when it has room.
-    for (auto& kv : gTeam)
-        if ((kv.second == 0 || kv.second == 1) && CountTeam(kv.second) > perTeam && CountTeam(1 - kv.second) < perTeam) kv.second = 1 - kv.second;
-    Log("lobby: team size %d", perTeam);
+    // Players beyond the new size (or on a team that was removed) move to a team with room.
+    FitTeams(m);
+    Log("lobby: %d teams of %d", NumTeams(), perTeam);
     HostSync(m);
 }
 
@@ -1046,6 +1225,9 @@ std::vector<BrowseEntry> Describe(const std::vector<uint64_t>& ids) {
         if (name.empty() || n <= 0) continue;
         std::wstring row = name;
         if (!map.empty()) row += L"   -   " + map;
+        rules::Values rv = rules::Decode(gB->Get(id, "rules"));
+        if (rv.teams > 2 || rv.koOnly)
+            row += std::wstring(L"   -   ") + (rv.koOnly ? L"TEAM BRAWL " : L"") + rules::TeamSizeLabels(rv.teams)[std::max(1, std::min(4, rv.teamSize)) - 1];
         row += L"   -   " + std::to_wstring(n) + L"/" + std::to_wstring(max);
         if (gB->Get(id, "state") == "game") row += L"   -   IN MATCH";
         out.push_back({ id, row });
@@ -1130,7 +1312,11 @@ bool OnListButton(void* btn) {
 // A team or spectator place was clicked (mouse, Enter, controller A): an empty place moves you there, your own
 // place moves you to the other team, and the host's click on someone else moves that player.
 int NextTeamWithRoom(uo::UObject* m, int from) {
-    for (int t : { from == 0 ? 1 : 0, from == 0 ? 0 : 1 }) if (t != from && CountTeam(t) < TeamMax(m, t)) return t;
+    int n = NumTeams();
+    for (int k = 1; k <= n; k++) {
+        int t = ((from < 0 ? -1 : from) + k) % n;
+        if (t != from && CountTeam(t) < TeamMax(m, t)) return t;
+    }
     return from;
 }
 void OpenInvite();
@@ -1149,13 +1335,13 @@ bool OnSlotPressed(void* slotPtr) {
     if (!m) return true;
     if (!occupied) {
         if (team == LocalTeamInLobby()) { if (gHost) OpenInvite(); }
-        else if (team >= -1 && team <= 1) RequestTeam(team);
+        else if (ValidTeam(team)) RequestTeam(team);
         return true;
     }
-    uint64_t id = _wcstoui64(F<FString>(slot, Slot_NetId).c_str(), nullptr, 10);
+    uint64_t id = SlotMember(slot);
     if (local || id == gB->Me()) {
         int cur = LocalTeamInLobby();
-        int to = cur < 0 ? NextTeamWithRoom(m, -1) : (cur == 0 ? 1 : 0);
+        int to = NextTeamWithRoom(m, cur);
         if (to != cur) RequestTeam(to);
         return true;
     }
@@ -1250,7 +1436,7 @@ void Tick(float dt) {
         gInMatch = true;
         std::wstring addr = W(gB->Get(gId, "addr"));
         Log("lobby: match #%lld started, joining %ls as %s %d", seq, addr.c_str(), gMyTeamInMatch < 0 ? "spectator" : "team", gMyTeamInMatch);
-        net::JoinHost(addr + NameOption() + L"?BETeam=" + std::to_wstring(gMyTeamInMatch));
+        net::JoinHost(addr + NameOption() + L"?BETeam=" + std::to_wstring(lobby::MyTeam()));
     }
     if (gB->Get(gId, "state") == "lobby" && gInMatch && inMenu) gInMatch = false;
 }
@@ -1266,6 +1452,25 @@ void Install() {
         Log("lobby: will join %ls from the command line", gPendingJoinFromCmdline.c_str());
     }
     steam::OnJoinRequested([](uint64_t id) { JoinById(id); });
+    // Team 3 sits in the left column (under team 1) and takes that column's layout (name, then the picture on the
+    // right). The slot Blueprint picks the layout from the team on every tick.
+    ui::OnEventAfter(L"CustomGame_PlayerSlot_Team_C", L"Tick", [](uint8_t* slot, void*, uint8_t*) {
+        if (F<int32_t>(slot, Slot_TeamId) != 2) return;
+        static int off = -2;
+        if (off == -2) off = uo::PropOffset(uo::ClassOf(slot), L"WidgetSwitcher_0");
+        uo::UObject* sw = off >= 0 ? F<uo::UObject*>(slot, off) : nullptr;
+        if (!sw) return;
+        uo::Call g(sw, L"GetActiveWidgetIndex");
+        if (g.ok() && g.run().get<int32_t>(L"ReturnValue") != 0) uo::Call(sw, L"SetActiveWidgetIndex").set<int32_t>(L"Index", 0).run();
+    });
+    // Team slot backgrounds: the slot Blueprint colours teams 0 and 1 (blue / red); teams 2 and 3 get yellow / green.
+    ui::OnEventAfter(L"CustomGame_PlayerSlot_Base_C", L"Get_Background_ColorAndOpacity", [](uint8_t* slot, void*, uint8_t* ret) {
+        int team = F<int32_t>(slot, Slot_TeamId);
+        float* c = (float*)ret;
+        static float alpha = 0.5f;
+        if ((team == 0 || team == 1) && c[3] > 0) alpha = c[3];   // the Blueprint's own strength (0.5) and fades
+        if (team >= 2 && team <= 3) { const float* tc = teams::Colour(team); c[0] = tc[0]; c[1] = tc[1]; c[2] = tc[2]; c[3] = alpha; }
+    });
     Hook(A_IsInLobby, (void*)&hkIsInLobbyImpl, (void**)&oIsInLobby, "IsInLobby");
     Hook(A_IsLeader, (void*)&hkIsLeaderImpl, (void**)&oIsLeader, "IsLeader");
     Hook(A_CustomStart, (void*)&hkCustomStart, (void**)&oCustomStart, "CustomStart");
@@ -1279,13 +1484,16 @@ void Install() {
     Hook(A_ExecLeaveLobby, (void*)&hkExecLeaveLobby, (void**)&oExecLeaveLobby, "LeaveLobby");
     Hook(A_ExecLeaveGame, (void*)&hkExecLeaveGame, (void**)&oExecLeaveGame, "LeaveGame");
     Hook(A_GetMapList, (void*)&hkGetMapList, (void**)&oGetMapList, "GetMapList");
+    Hook(A_GetTeamMaxPlayers, (void*)&hkGetTeamMaxPlayers, (void**)&oGetTeamMaxPlayers, "GetTeamMaxPlayers");
+    Hook(A_GetTeamMembers, (void*)&hkGetTeamMembers, (void**)&oGetTeamMembers, "GetTeamMembers");
+    Hook(A_LoadingFromLobby, (void*)&hkLoadingFromLobby, (void**)&oLoadingFromLobby, "LoadingFromLobby");
     Log("lobby: hooks installed");
 }
 }  // namespace lobby
 
 // Developer shortcuts from the dev command channel.
 void LobbyDevCommand(const char* cmd) {
-    unsigned long long id = 0; int t = 0;
+    unsigned long long id = 0; int t = 0, n2 = 0;
     if (!strcmp(cmd, "create")) lobby::CreateAsHost();
     else if (!strcmp(cmd, "leave")) lobby::Leave();
     else if (sscanf(cmd, "join %llu", &id) == 1) lobby::JoinById(id);
@@ -1295,5 +1503,7 @@ void LobbyDevCommand(const char* cmd) {
     else if (!strcmp(cmd, "tomenu")) net::Travel(L"/Game/Levels/FrontEnd/Map_FrontEnd_3D");
     else if (!strcmp(cmd, "rejoin")) gSeenSeq = -1;
     else if (!strcmp(cmd, "leavebtn")) lobby::OnListButton(gLeaveBtn[gHost ? 0 : 1]);
+    else if (sscanf(cmd, "teams %d %d", &t, &n2) == 2) { rules::Values v = rules::Current(); v.teams = t; v.teamSize = n2; rules::Set(v); lobby::SetTeamSize(n2); }
+    else if (sscanf(cmd, "forceteam %d", &t) == 1) { lobby::gForceTeam = t; Log("lobby: forced team %d", t); }
     else if (!strncmp(cmd, "rules ", 6)) rules::Set(rules::Decode(cmd + 6));
 }

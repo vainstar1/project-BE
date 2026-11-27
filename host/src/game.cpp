@@ -227,9 +227,95 @@ void __fastcall hkLeaverMessage(void* ctx) {
     if (lobby::Active() || net::CustomMatch()) { Log("leaver: official penalty message skipped in a custom game"); return; }
     oLeaverMessage(ctx);
 }
+// ---- unlocked frame rate --------------------------------------------------------------------------------------
+// Bleeding Edge has an "unlock frame rate" option (RollbackEngine.ThrottleEngineTickRate = 0, saved as
+// ThrottleEngineTickRate in GameUserSettings) that shipped hidden: video.AllowThrottleEngineTickRate is 0 in the
+// game's config, so the option is not shown and applying the video settings forces the throttle back on (60 fps).
+// The mod keeps the allow flag on, so the option shows and is respected.
+constexpr uintptr_t A_CVarAllowThrottle = 0x145341a98;      // int* video.AllowThrottleEngineTickRate
+constexpr uintptr_t A_ThrottleEngineTickRate = 0x144e14d30; // int  RollbackEngine.ThrottleEngineTickRate (1 = 60 fps)
+constexpr uintptr_t A_SmoothMax = 0x14534137c, A_SmoothMin = 0x144f352e4, A_SmoothOn = 0x144f352e0;
+// The rollback engine's tick-rate limit: when unlocked it normally returns 0 (no limit), but in online matches it
+// first takes a time-sync branch that returns a ~60 fps limit whenever it nudges the timing toward the other
+// players, without looking at the setting. Unlocked, the simulation steps on real elapsed time, so that limit
+// doesn't help the sync at all - it only drops the frame rate to 60 every now and then.
+constexpr uintptr_t A_RollbackMaxTickRate = 0x140403650;    // float (NTRollbackEngine*, float)
+using MaxTickFn = float(__fastcall*)(void*, float);
+MaxTickFn oRollbackMaxTick;
+float __fastcall hkRollbackMaxTick(void* engine, float x) {
+    float r = oRollbackMaxTick(engine, x);   // keeps its bookkeeping
+    return *(int32_t*)VA(A_ThrottleEngineTickRate) == 0 ? 0.0f : r;
+}
+// The engine's own limiter (UMBGameEngine::GetMaxTickRate). With the throttle off it applies Ninja Theory's frame
+// rate smoothing: the next frame is limited to the recent average frame rate. That feeds back on itself: once the
+// game ran at 60 for a moment (a loading screen, a busy scene) it stays at 60, until something disturbs the
+// average (changing a video setting, switching fullscreen/borderless) and it climbs again. Unlocked means unlocked:
+// no smoothing. The player's frame rate limit and V-Sync (Options > Video) still apply.
+constexpr uintptr_t A_EngineMaxTickRate = 0x141041d80;   // float UMBGameEngine::GetMaxTickRate(float DeltaTime, bool bAllowSmoothing)
+using EngineMaxFn = float(__fastcall*)(void*, float, bool);
+EngineMaxFn oEngineMaxTick;
+float __fastcall hkEngineMaxTick(void* engine, float dt, bool smooth) {
+    if (*(int32_t*)VA(A_ThrottleEngineTickRate) == 0) smooth = false;
+    return oEngineMaxTick(engine, dt, smooth);
+}
+// t.MaxFPS (the engine's FPS cap) is set from the player's Frame Rate Limit when the video settings are applied,
+// but it also turns up at 60 on its own now and then (it then stays there until a setting is changed). While the
+// frame rate is unlocked it is held at the player's own limit (0 = none).
+constexpr uintptr_t A_CVarMaxFPS = 0x14558fc80;   // float* t.MaxFPS (game-thread and render-thread values)
+void FrameRateTick() {
+    static DWORD last;
+    DWORD now = GetTickCount();
+    if (now - last < 1000) return;
+    last = now;
+    int32_t* allow = *(int32_t**)VA(A_CVarAllowThrottle);
+    if (allow && (allow[0] <= 0 || allow[1] <= 0)) {
+        Log("fps: video.AllowThrottleEngineTickRate %d -> 1 (unlock frame rate option available)", allow[0]);
+        allow[0] = allow[1] = 1;
+    }
+    // The throttle follows the player's own choice (Options > Video > Unlock Frame Rate) and nothing else: anything
+    // that switches it back on behind their back (a settings re-apply while the option was disallowed, settings
+    // pushed by the game's servers) is undone within a second.
+    static uo::UObject* gus;
+    if (!gus || !uo::IsLive(gus)) gus = uo::FindFirst(uo::FindClass(L"GameUserSettings"));
+    uo::Call get(gus, L"GetThrottleEngineTickRate");
+    if (gus && get.ok()) {
+        int want = get.run().get<bool>(L"ReturnValue") ? 1 : 0;
+        int32_t& cur = *(int32_t*)VA(A_ThrottleEngineTickRate);
+        if (cur != want) { Log("fps: frame rate lock was %d, the player's setting is %d: restored", cur, want); cur = want; }
+    }
+    float* maxFps = *(float**)VA(A_CVarMaxFPS);
+    uo::Call lim(gus, L"GetFrameRateLimit");
+    if (maxFps && gus && lim.ok() && *(int32_t*)VA(A_ThrottleEngineTickRate) == 0) {
+        float want = lim.run().get<float>(L"ReturnValue");
+        if (want < 0) want = 0;
+        if (maxFps[0] != want || maxFps[1] != want) {
+            Log("fps: t.MaxFPS was %.0f, the player's frame rate limit is %.0f: restored", maxFps[0], want);
+            maxFps[0] = maxFps[1] = want;
+        }
+    }
+    static int lastThrottle = -1;
+    int t = *(int32_t*)VA(A_ThrottleEngineTickRate);
+    if (t != lastThrottle) { lastThrottle = t; Log("fps: frame rate %s", t ? "locked to the simulation (60)" : "unlocked"); }
+}
 }  // namespace
 
+void FpsDevReport() {
+    int32_t* allow = *(int32_t**)VA(A_CVarAllowThrottle);
+    Log("fps: allow=%d throttle=%d smoothing=%d min=%.1f max=%.1f", allow ? allow[0] : -1, *(int32_t*)VA(A_ThrottleEngineTickRate),
+        *(uint8_t*)VA(A_SmoothOn), *(float*)VA(A_SmoothMin), *(float*)VA(A_SmoothMax));
+    uo::UObject* gus = uo::FindFirst(uo::FindClass(L"GameUserSettings"));
+    for (const wchar_t* f : { L"IsAllowedThrottleEngineTickRate", L"GetThrottleEngineTickRate", L"GetDefaultThrottleEngineTickRate", L"GetFrameRateLimit", L"IsVSyncEnabled" }) {
+        uo::Call c(gus, f);
+        if (!c.ok()) continue;
+        c.run();
+        void* native = F<void*>(c.fn, uo::Func_Native);
+        Log("fps: %ls -> %d (as float %.1f) native=%llx", f, c.buf[0], *(float*)c.buf.data(), (unsigned long long)((uintptr_t)native - gBase + 0x140000000ull));
+    }
+    if (gus) Log("fps: settings object %ls byte186=%d", uo::Name(uo::ClassOf(gus)).c_str(), gus[0x186]);
+}
+
 void GameTeamsTick() {
+    FrameRateTick();
     LARGE_INTEGER f, t0, t1, t2, t3;
     QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0);
     SyncTeamsOnHost(); QueryPerformanceCounter(&t1);
@@ -246,6 +332,8 @@ void InstallGame() {
     if (MH_CreateHook((void*)VA(BuildLocalAddPlayer), (void*)&hkBuildLocalAddPlayer, (void**)&oBuildLocalAddPlayer) == MH_OK)
         Log("team patch installed");
     MH_CreateHook((void*)VA(A_ServerBroadcastChatImpl), (void*)&hkBroadcastChat, (void**)&oBroadcastChat);
+    MH_CreateHook((void*)VA(A_RollbackMaxTickRate), (void*)&hkRollbackMaxTick, (void**)&oRollbackMaxTick);
+    MH_CreateHook((void*)VA(A_EngineMaxTickRate), (void*)&hkEngineMaxTick, (void**)&oEngineMaxTick);
     MH_CreateHook((void*)VA(A_AddLocalPlayerLeaveReason), (void*)&hkLeaveReason, (void**)&oLeaveReason);
     MH_CreateHook((void*)VA(A_CheckAndShowLeaverMessage), (void*)&hkLeaverMessage, (void**)&oLeaverMessage);
     // SubmitChangePlayerClassInputEventOnServer_Validate checks the player's PlayFab inventory (owned skins etc.).

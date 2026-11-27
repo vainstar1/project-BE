@@ -36,6 +36,9 @@ Values gCur;                       // current rules (host: from the panel; membe
 
 // MBCapturePointManagerData / MBCapturePointData / MBSeedManagerActorData fields
 constexpr size_t PMD_PointsRequiredToWin = 0x4c, PMD_InfiniteCycle = 0x98, PMD_CycleActiveTime = 0x9c;
+// Scoring sources (Team Brawl: knockouts only) and the delay before the first objectives open
+constexpr size_t PMD_PointsOnKO = 0x30, PMD_PointsOnPortal = 0x34, PMD_PointsOnTick = 0x38, PMD_PointsOnCapture = 0x3c,
+                 PMD_CycleWaitInitial = 0x94;
 constexpr size_t CPD_CaptureTime = 0x220;
 constexpr size_t SMD_SeedsRequiredValue = 0x1b0;   // SeedsRequired (struct at 0x188) base value: 50 on every map
 
@@ -108,14 +111,38 @@ void SetModsCVar(const std::wstring& v) {
 namespace {
 std::map<uo::UObject*, std::pair<int, float>> gOrigPoints;   // points manager data -> (PointsRequiredToWin, CycleActiveTime)
 std::map<uo::UObject*, std::pair<bool, bool>> gOrigCycle;    // -> InfiniteCycle as designed
+struct Scoring { int ko, portal, tick, capture; float wait; };
+std::map<uo::UObject*, Scoring> gOrigScoring;                  // -> scoring sources as designed
 std::map<uo::UObject*, float> gOrigCapture;                    // capture point data -> CaptureTime
 std::map<uo::UObject*, int> gOrigSeeds;                        // seed manager data -> SeedsRequired
-int ApplyTo(const std::vector<uo::UObject*>& points, const std::vector<uo::UObject*>& caps, const std::vector<uo::UObject*>& seeds, bool log) {
+std::map<uo::UObject*, int> gOrigNumTeams;                     // common level object data -> NumTeams
+constexpr size_t CLD_NumTeams = 0x30;
+int ApplyTo(const std::vector<uo::UObject*>& points, const std::vector<uo::UObject*>& caps, const std::vector<uo::UObject*>& seeds,
+            const std::vector<uo::UObject*>& levels, bool log) {
     int n = 0;
+    for (uo::UObject* d : levels) {
+        if (!gOrigNumTeams.count(d)) gOrigNumTeams[d] = F<int32_t>(d, CLD_NumTeams);
+        int orig = gOrigNumTeams[d];
+        if (orig < 1 || orig > 8) continue;
+        F<int32_t>(d, CLD_NumTeams) = gCur.teams > 2 ? gCur.teams : orig;
+        if (log) Log("rules: %ls teams %d -> %d", uo::Name(d).c_str(), orig, F<int32_t>(d, CLD_NumTeams));
+        n++;
+    }
     for (uo::UObject* d : points) {
         if (!gOrigPoints.count(d)) { gOrigPoints[d] = { F<int32_t>(d, PMD_PointsRequiredToWin), F<float>(d, PMD_CycleActiveTime) }; gOrigCycle[d] = { F<bool>(d, PMD_InfiniteCycle), true }; }
         auto o = gOrigPoints[d];
-        F<int32_t>(d, PMD_PointsRequiredToWin) = gCur.cp > 0 ? gCur.cp : o.first;
+        if (!gOrigScoring.count(d))
+            gOrigScoring[d] = { F<int32_t>(d, PMD_PointsOnKO), F<int32_t>(d, PMD_PointsOnPortal), F<int32_t>(d, PMD_PointsOnTick),
+                                F<int32_t>(d, PMD_PointsOnCapture), F<float>(d, PMD_CycleWaitInitial) };
+        Scoring sc = gOrigScoring[d];
+        bool brawl = gCur.koOnly != 0;
+        // Team Brawl: one point per knockout, first to the target wins; the objectives never open.
+        F<int32_t>(d, PMD_PointsRequiredToWin) = brawl ? KoTarget(gCur) : gCur.cp > 0 ? gCur.cp : o.first;
+        F<int32_t>(d, PMD_PointsOnKO) = brawl ? 1 : sc.ko;
+        F<int32_t>(d, PMD_PointsOnPortal) = brawl ? 0 : sc.portal;
+        F<int32_t>(d, PMD_PointsOnTick) = brawl ? 0 : sc.tick;
+        F<int32_t>(d, PMD_PointsOnCapture) = brawl ? 0 : sc.capture;
+        F<float>(d, PMD_CycleWaitInitial) = brawl ? 1.0e8f : sc.wait;
         float mul = kObjMul[gCur.objectives];
         F<bool>(d, PMD_InfiniteCycle) = mul == 0.0f ? true : gOrigCycle[d].first;
         F<float>(d, PMD_CycleActiveTime) = mul == 0.0f ? o.second : o.second * mul;
@@ -140,7 +167,7 @@ int ApplyTo(const std::vector<uo::UObject*>& points, const std::vector<uo::UObje
 }
 void ApplyNow(bool fullScan, bool log) {
     auto find = [&](const wchar_t* c) { uo::UObject* cls = uo::FindClass(c); return fullScan ? uo::FindAllNow(cls) : uo::FindAll(cls); };
-    ApplyTo(find(L"MBCapturePointManagerData"), find(L"MBCapturePointData"), find(L"MBSeedManagerActorData"), log);
+    ApplyTo(find(L"MBCapturePointManagerData"), find(L"MBCapturePointData"), find(L"MBSeedManagerActorData"), find(L"MBCommonLevelObjectActorData"), log);
 }
 }  // namespace
 
@@ -157,7 +184,7 @@ void __fastcall hkModsWorldInit(void* mgr, void* worldRef) {
         Log("rules: map mods '%ls' -> %d", list.c_str(), ok);
     } else SetModsCVar(L"");
     if (lobby::Active()) {
-        gOrigPoints.clear(); gOrigCycle.clear(); gOrigCapture.clear(); gOrigSeeds.clear();
+        gOrigPoints.clear(); gOrigCycle.clear(); gOrigCapture.clear(); gOrigSeeds.clear(); gOrigNumTeams.clear(); gOrigScoring.clear();
         ApplyNow(true, true);
     }
     oModsWorldInit(mgr, worldRef);
@@ -169,6 +196,22 @@ void Install() {
 const wchar_t* const* ObjectiveOptions(int* n) { *n = 4; return kObjText; }
 const wchar_t* const* CaptureOptions(int* n) { *n = 3; return kCapText; }
 const wchar_t* const* TeamSizeOptions(int* n) { *n = 4; return kTeamText; }
+// "2v2v2" style labels for a number of teams
+std::vector<std::wstring> TeamSizeLabels(int teams) {
+    std::vector<std::wstring> v;
+    for (int size = 1; size <= 4; size++) {
+        std::wstring s = std::to_wstring(size);
+        for (int t = 1; t < teams; t++) s += L"v" + std::to_wstring(size);
+        v.push_back(s);
+    }
+    return v;
+}
+std::vector<std::wstring> TeamCountOptions() { return { L"2 Teams", L"3 Teams", L"4 Teams" }; }
+const std::vector<int>& KoValues() { static std::vector<int> v = MakeSteps({ { 50, 5 }, { 100, 10 } }, 5); return v; }
+std::vector<std::wstring> KoOptions() { return Texts(KoValues()); }
+std::vector<std::wstring> ScoringOptions() { return { L"Objectives", L"Knockouts Only" }; }
+int KoIndex(int value) { return IndexOf(KoValues(), value); }
+int KoValueAt(int i) { return i >= 0 && i < (int)KoValues().size() ? KoValues()[i] : 0; }
 const wchar_t* const* ModModeOptions(int* n) { *n = 3; return kModModeText; }
 std::vector<std::wstring> CpScoreOptions() { return Texts(CpValues()); }
 std::vector<std::wstring> PcScoreOptions() { return Texts(PcValues()); }
@@ -178,18 +221,20 @@ int CpValueAt(int i) { return i >= 0 && i < (int)CpValues().size() ? CpValues()[
 int PcValueAt(int i) { return i >= 0 && i < (int)PcValues().size() ? PcValues()[i] : 0; }
 
 Values Current() { return gCur; }
+// Knockouts to win a Team Brawl: the host's choice, else 5 per player on a team plus 5 (1v1v1: 10, 4v4v4v4: 25).
+int KoTarget(const Values& v) { return v.kos > 0 ? v.kos : 5 * std::max(1, v.teamSize) + 5; }
 void Set(const Values& v) {
-    if (v.cp != gCur.cp || v.pc != gCur.pc || v.objectives != gCur.objectives || v.capture != gCur.capture || v.teamSize != gCur.teamSize || v.mods != gCur.mods)
-        Log("rules: points=%d cells=%d rotation=%d capture=%d team=%d mods=%x", v.cp, v.pc, v.objectives, v.capture, v.teamSize, v.mods);
+    if (v.cp != gCur.cp || v.pc != gCur.pc || v.objectives != gCur.objectives || v.capture != gCur.capture || v.teamSize != gCur.teamSize || v.mods != gCur.mods || v.teams != gCur.teams || v.kos != gCur.kos || v.koOnly != gCur.koOnly)
+        Log("rules: points=%d cells=%d rotation=%d capture=%d team=%d mods=%x teams=%d", v.cp, v.pc, v.objectives, v.capture, v.teamSize, v.mods, v.teams);
     gCur = v;
 }
 std::string Encode() {
-    char b[96]; snprintf(b, sizeof b, "%d,%d,%d,%d,%u,%d,%d", gCur.cp, gCur.objectives, gCur.capture, gCur.teamSize, gCur.mods, gCur.pc, gCur.modMode);
+    char b[96]; snprintf(b, sizeof b, "%d,%d,%d,%d,%u,%d,%d,%d,%d,%d", gCur.cp, gCur.objectives, gCur.capture, gCur.teamSize, gCur.mods, gCur.pc, gCur.modMode, gCur.teams, gCur.kos, gCur.koOnly);
     return b;
 }
 Values Decode(const std::string& s) {
     Values v;
-    if (!s.empty()) sscanf(s.c_str(), "%d,%d,%d,%d,%u,%d,%d", &v.cp, &v.objectives, &v.capture, &v.teamSize, &v.mods, &v.pc, &v.modMode);
+    if (!s.empty()) sscanf(s.c_str(), "%d,%d,%d,%d,%u,%d,%d,%d,%d,%d", &v.cp, &v.objectives, &v.capture, &v.teamSize, &v.mods, &v.pc, &v.modMode, &v.teams, &v.kos, &v.koOnly);
     if (v.cp < 0 || v.cp > 100000) v.cp = 0;
     if (v.pc < 0 || v.pc > 10000) v.pc = 0;
     v.mods &= (1u << kNumMods) - 1;
@@ -197,6 +242,9 @@ Values Decode(const std::string& s) {
     if (v.capture < 0 || v.capture > 2) v.capture = 0;
     if (v.teamSize < 1 || v.teamSize > 4) v.teamSize = 4;
     if (v.modMode < 0 || v.modMode > 2) v.modMode = v.mods ? 1 : 0;
+    if (v.teams < 2 || v.teams > 4) v.teams = 2;
+    if (v.kos < 0 || v.kos > 1000) v.kos = 0;
+    v.koOnly = v.koOnly ? 1 : 0;
     return v;
 }
 
@@ -211,7 +259,7 @@ void Tick() {
     void* w = net::World();
     if (w != world) {
         world = w; passes = 0;
-        uo::Prewarm({ L"MBCapturePointManagerData", L"MBCapturePointData", L"MBSeedManagerActorData" });   // one pass for all three
+        uo::Prewarm({ L"MBCapturePointManagerData", L"MBCapturePointData", L"MBSeedManagerActorData", L"MBCommonLevelObjectActorData" });   // one pass for all three
     }
     if (passes > 20) return;
     passes++;
